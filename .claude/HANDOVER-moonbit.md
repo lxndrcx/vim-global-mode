@@ -7,17 +7,26 @@ watches directories that already had a settings file at session start, and
 `.claude/` had none. So the config is correct on disk and inert in that session,
 and a subagent spawned there would have inherited the same empty skill set.
 
-**Update — that is handled now, by `.claude/hooks/session-start.sh`.** The
+**Update — that is handled now, by the hooks in `.claude/hooks/`.** The
 watcher problem is gone (`.claude/settings.json` exists at session start), but a
 second one replaced it: declaring a plugin in settings does not make a remote
 container *fetch* it. A later session started with the marketplace declared and
 `installed_plugins.json` still empty, and with no MoonBit toolchain at all --
 `moon` is not preinstalled in these containers, so the `0.1.20260814` /
 `v0.10.8` versions quoted below were a property of one container, not of the
-project. The hook installs both and is a no-op once they are present; a cold
-run measured 23s. If the skills are missing anyway, run it by hand:
+project. The hooks install everything the repo needs and are no-ops once it is
+all present.
 
-    CLAUDE_CODE_REMOTE=true ./.claude/hooks/session-start.sh
+`moon`, `nvim` and `stylua` land via `session-start-binaries.sh`, which runs
+asynchronously -- a cold container measured 34s, and the session does not wait
+for it. **So a session can start before `moon` exists.** If a `moon`, `nvim` or
+`stylua` command fails with "command not found" in the first half-minute of a
+cold session, that is this race, not a broken install: wait and retry.
+`session-start-skills.sh` is synchronous by contrast (5s cold), because skills
+are read at session start to decide what the session knows. Run either by hand:
+
+    CLAUDE_CODE_REMOTE=true ./.claude/hooks/session-start-binaries.sh
+    CLAUDE_CODE_REMOTE=true ./.claude/hooks/session-start-skills.sh
 
 Skills load from the plugin cache, from `.claude/skills/`, and from
 `~/.claude/skills/`. Nothing is vendored into this repo: `moonbitlang/skills`
