@@ -50,6 +50,7 @@ const rpc = (args) => {
 };
 
 const received = [];
+let pongs = 0;
 let socket = null;
 
 const server = net.createServer((s) => {
@@ -76,13 +77,18 @@ const server = net.createServer((s) => {
         // Deliberately NOT acted on: this models the change being lost, which
         // is exactly the situation resync has to recover from.
         received.push(msg.mode);
+      } else if (msg.t === "pong") {
+        pongs++;
       }
     }
   });
 });
 
-const ping = (mode, seq) =>
+let pingsSent = 0;
+const ping = (mode, seq) => {
+  pingsSent++;
   socket.write(JSON.stringify({ t: "ping", mode, seq, by: "bob" }) + "\n");
+};
 
 (async () => {
   await new Promise((r) => server.listen(PORT, "127.0.0.1", r));
@@ -132,6 +138,12 @@ const ping = (mode, seq) =>
     ping("i", 2);
     await sleep(1200);
     check("a stale heartbeat is ignored", rpc(["--remote-expr", "mode(1)"]), "R");
+
+    // Every heartbeat must be answered. The server reaps a client after two
+    // unanswered pings, and an idle editor -- nobody typing, which is the
+    // normal state -- sends nothing else, so a missing pong means every quiet
+    // editor is dropped roughly every fifteen seconds.
+    check("every heartbeat was answered", pongs, pingsSent);
   } finally {
     console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);
     nvim.kill();

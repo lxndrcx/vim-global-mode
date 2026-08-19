@@ -46,7 +46,9 @@ jobs:
           version: stable
 
       - name: Unit tests
-        run: nvim -l tests/protocol_spec.lua
+        run: |
+          nvim -l tests/protocol_spec.lua
+          nvim -l tests/api_spec.lua
 
       # Drives a real Neovim against a controlled server. Covers the loop-guard
       # case two-editors.sh structurally cannot reach: a mode pushed directly at
@@ -94,9 +96,21 @@ jobs:
       - name: Server end-to-end
         run: |
           ./server/_build/native/debug/build/cmd/main/main.exe \
-            --bind 127.0.0.1 --port 7777 --http-port 7778 &
-          sleep 2
+            --bind 127.0.0.1 --port 7777 --http-port 7778 --verbose >server.log 2>&1 &
+          echo $! > server.pid
+          # Poll rather than sleeping blind, so a slow runner does not look like
+          # a broken server.
+          for _ in $(seq 40); do
+            curl -sf http://127.0.0.1:7778/api/state >/dev/null && break
+            sleep 0.25
+          done
           node scripts/fake-client.js --clients 3
+          # A server that passed and then died leaves no other trace.
+          kill -0 "$(cat server.pid)" || { echo "server died during the run"; exit 1; }
+
+      - name: Server log
+        if: failure()
+        run: tail -60 server.log || true
 
       # The real thing: two headless Neovim instances sharing one mode.
       - name: Two real editors

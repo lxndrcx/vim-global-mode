@@ -136,6 +136,43 @@ const push = (mode, seq) =>
     rpc(["--remote-send", "<C-\\><C-n>"]);
     await sleep(800);
     check("a genuine change is still broadcast afterwards", received.slice(beforeGenuine), ["n"]);
+
+    // Two frames in ONE TCP write. Any latency, or a busy main loop, coalesces
+    // reads like this. `apply` schedules its work, so when the second frame is
+    // handled the first one's keys are still in the typeahead and `mode(1)`
+    // still reports the OLD mode -- so a check against the current mode
+    // discarded the second frame as a no-op and left the editor in the first
+    // one's mode believing it was in the second's. Nothing recovered it.
+    //
+    // Everything else in this file pushes one frame at a time with a sleep
+    // between, which is exactly why this needs writing by hand.
+    const beforeBatch = received.length;
+    socket.write(
+      JSON.stringify({ t: "mode", mode: "i", seq: 10, by: "bob", by_id: "c9" }) +
+        "\n" +
+        JSON.stringify({ t: "mode", mode: "n", seq: 11, by: "bob", by_id: "c9" }) +
+        "\n"
+    );
+    await sleep(2000);
+    check("a coalesced batch lands on its LAST mode", rpc(["--remote-expr", "mode(1)"]), "n");
+    check(
+      "and the editor agrees with the server about it",
+      rpc(["--remote-expr", 'luaeval("require(\'global-mode\').mode()")']),
+      "n"
+    );
+    check("the batch was not echoed back", received.slice(beforeBatch), []);
+
+    // The reverse ordering too: ending on a non-normal mode.
+    const beforeBatch2 = received.length;
+    socket.write(
+      JSON.stringify({ t: "mode", mode: "n", seq: 12, by: "bob", by_id: "c9" }) +
+        "\n" +
+        JSON.stringify({ t: "mode", mode: "v", seq: 13, by: "bob", by_id: "c9" }) +
+        "\n"
+    );
+    await sleep(2000);
+    check("a coalesced batch ending in visual lands there", rpc(["--remote-expr", "mode(1)"]), "v");
+    check("still nothing echoed", received.slice(beforeBatch2), []);
   } finally {
     console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);
     cleanup();

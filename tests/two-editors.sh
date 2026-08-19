@@ -37,6 +37,15 @@ cleanup() {
     [ -f "$WORK/$name.pid" ] && kill "$(cat "$WORK/$name.pid")" 2>/dev/null
   done
   [ -f "$WORK/server.pid" ] && kill "$(cat "$WORK/server.pid")" 2>/dev/null
+  # On failure the logs are the only evidence, and $WORK is a mktemp dir that
+  # is about to vanish -- so print them before it does.
+  if [ "${fails:-0}" -ne 0 ]; then
+    for log in "$WORK"/*.log; do
+      [ -f "$log" ] || continue
+      echo "----- $(basename "$log") -----"
+      tail -40 "$log"
+    done
+  fi
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -63,7 +72,16 @@ start() {
 
 # Every RPC call is wrapped in a timeout: a wedged editor should fail the test,
 # not hang it.
-expr_on() { timeout 5 nvim --server "$WORK/$1.sock" --remote-expr "$2" 2>/dev/null | tr -d '\n'; }
+# A failed call must not return "": two failures would then compare equal and
+# any check comparing one editor's value against another's would pass vacuously.
+expr_on() {
+  local out
+  if ! out=$(timeout 5 nvim --server "$WORK/$1.sock" --remote-expr "$2" 2>/dev/null); then
+    echo "<rpc-failed:$1>"
+  else
+    printf '%s' "$out" | tr -d '\n'
+  fi
+}
 send_to() { timeout 5 nvim --server "$WORK/$1.sock" --remote-send "$2" 2>/dev/null; }
 
 mode_of() { expr_on "$1" 'mode(1)'; }
@@ -119,13 +137,12 @@ check "alex can leave visual mode" "$(mode_of alex)" "n"
 check "sam follows back out of visual" "$(mode_of sam)" "n"
 check "seq advanced once leaving visual" "$(seq_of sam)" "$((base_seq + 4))"
 
-# Applying a mode while the recipient is NOT in normal mode. Every entry in the
-# plugin's key table starts with CTRL-\ CTRL-N, so this passes through normal on
-# the way and fires an extra ModeChanged. Treating that transit as a real change
-# used to defeat the loop guard completely: the recipient broadcast a bogus `n`,
-# yanking everyone back to normal, then re-broadcast the mode it had just been
-# told to enter. Every transition tested above starts from normal, where the
-# transit fires nothing -- which is exactly why this went unnoticed.
+# A cross-mode transition between two real editors. This is a worthwhile
+# end-to-end check, but be clear about what it does NOT cover: it cannot reach
+# the loop guard's transit rule. A real editor walking i->v emits `n` then `v`,
+# so the recipient is stepped through normal and the transit never fires --
+# deleting the transit rule leaves all of these checks green. Only
+# tests/loop-guard.js, which pushes a mode directly, protects that.
 send_to alex 'i'
 sleep 1
 check "both are in insert before the cross-mode test" "$(mode_of alex)$(mode_of sam)" "ii"

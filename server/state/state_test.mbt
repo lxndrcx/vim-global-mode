@@ -172,3 +172,23 @@ test "a client that fell behind still ends on the current mode" {
   assert_eq(fields.get("mode"), Some(Json::string(hub.mode.to_wire())))
   assert_eq(fields.get("seq"), Some(Json::number(hub.seq.to_double())))
 }
+
+///|
+test "only the first hello on a connection counts" {
+  // Every identify fans a fresh roster to everyone connected, so an unthrottled
+  // one is an O(n) amplifier: a client repeating `hello` pinned a core with 150
+  // idle editors attached.
+  let hub = Hub::new()
+  let alex = hub.join("anon", "1.2.3.4")
+  let sam = hub.join("anon", "5.6.7.8")
+  hub.identify(alex, "alex", "thinkpad")
+  drain(sam) |> ignore
+  for _ in 0..<200 {
+    hub.identify(alex, "evil", "elsewhere")
+  }
+  // The name from the first hello stands, and no further rosters were sent.
+  let mine = hub.peers().filter(p => p.id == alex.id)
+  assert_eq(mine.length(), 1)
+  assert_eq(mine[0].user, "alex")
+  assert_eq(drain(sam).length(), 0)
+}

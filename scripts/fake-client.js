@@ -195,6 +195,32 @@ async function runTests() {
   check("invalid modes are ignored", state.mode, "V");
   check("garbage does not disconnect anyone", state.clients.length, baseClients + n);
 
+  // The per-line cap. Without it, one client sending bytes with no newline
+  // burned 100% of a core and 56 MB of RSS; nothing else in any suite touches
+  // the server's framing, so this is the only thing standing between that
+  // regression and a release.
+  const flooder = await new FakeEditor("flooder").connect();
+  await sleep(150);
+  const withFlooder = (await fetchState()).clients.length;
+  let dropped = false;
+  flooder.socket.on("close", () => { dropped = true; });
+  flooder.socket.on("error", () => { dropped = true; });
+  flooder.socket.write("A".repeat(64 * 1024));   // no newline, ever
+  await sleep(1500);
+  check("an over-long line disconnects that client", dropped, true);
+
+  state = await fetchState();
+  check("and the server survives it", typeof state.mode, "string");
+  check("and the other editors are untouched", state.clients.length, withFlooder - 1);
+
+  // A mode change still propagates afterwards, so the server is not just alive
+  // but working.
+  const beforeFlood = state.seq;
+  first.setMode("R");
+  await sleep(200);
+  state = await fetchState();
+  check("the server still serves after a flood", state.seq, beforeFlood + 1);
+
   // Disconnect handling.
   const leaving = editors.pop();
   leaving.close();
