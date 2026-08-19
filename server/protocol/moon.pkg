@@ -3,3 +3,7 @@ import {
 }
 
 supported_targets = "+native"
+
+options(
+  "proof-enabled": true,
+)
