@@ -20,12 +20,23 @@ local KEYS = {
   -- terminal mode in a buffer that is not a terminal. It is displayed, not applied.
 }
 
---- The mode we are currently forcing, if any.
+--- Modes we are currently forcing, oldest first.
 ---
 --- Feeding keys fires `ModeChanged`, which would broadcast the change straight
---- back and start a ping-pong storm. The send path checks this and stays quiet
---- when the change is one we caused.
-M.pending = nil
+--- back and start a ping-pong storm. This queue is what the send path checks to
+--- stay quiet about changes we caused.
+---
+--- It is a queue rather than a single value because two remote frames can be
+--- scheduled before either one's keys reach the typeahead, and because a single
+--- apply produces up to *two* `ModeChanged` events, not one — see `consume`.
+M.expected = {}
+
+--- How long to keep waiting for a forced change to land, in milliseconds.
+---
+--- Without a deadline an apply that never produces a mode change at all — `i`
+--- into a `nomodifiable` buffer raises E21, for instance — would leave its entry
+--- in the queue forever, silently swallowing the user's next genuine change.
+local EXPECT_MS = 500
 
 --- Circuit breaker state. Bounds any feedback loop that survives the guards
 --- above, so a bug degrades into a log line rather than a hung editor.
@@ -54,6 +65,19 @@ local function allowed()
   return true
 end
 
+--- Drop entries whose forced change never arrived.
+local function expire()
+  local now = vim.uv.now()
+  while M.expected[1] and now > M.expected[1].deadline do
+    table.remove(M.expected, 1)
+  end
+end
+
+--- Forget every pending expectation. Used when an applied change lands wrong.
+function M.reset()
+  M.expected = {}
+end
+
 --- Force this editor into `mode`.
 ---
 --- Safe to call from a `vim.uv` callback: the actual work is scheduled, because
@@ -80,24 +104,39 @@ function M.apply(mode)
       return
     end
 
-    M.pending = mode
+    table.insert(M.expected, { mode = mode, deadline = vim.uv.now() + EXPECT_MS })
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(keys, true, false, true), "n", false)
   end)
 end
 
 --- True if `mode` is a change we are in the middle of forcing.
----
---- Consumes the pending marker, so a genuine later change to the same mode is
---- still broadcast.
 ---@param mode string
 ---@return boolean
 function M.consume(mode)
-  if M.pending == mode then
-    M.pending = nil
+  expire()
+
+  local head = M.expected[1]
+  if not head then
+    return false
+  end
+
+  if mode == head.mode then
+    table.remove(M.expected, 1)
     return true
   end
-  -- Any other change means our forced one never landed; stop waiting for it.
-  M.pending = nil
+
+  -- Every entry in KEYS begins with CTRL-\ CTRL-N, so applying any non-normal
+  -- mode from any non-normal mode passes through normal on the way and fires an
+  -- extra `ModeChanged` first. Treating that transit as a real change is what
+  -- used to defeat the loop guard entirely: the editor broadcast a bogus `n`,
+  -- yanking everyone else to normal, and then re-broadcast the very mode it had
+  -- just been told to enter.
+  if mode == "n" and head.mode ~= "n" then
+    return true
+  end
+
+  -- Anything else means our forced change did not land; stop waiting for it.
+  M.expected = {}
   return false
 end
 

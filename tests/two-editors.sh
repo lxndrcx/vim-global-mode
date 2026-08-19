@@ -119,6 +119,27 @@ check "alex can leave visual mode" "$(mode_of alex)" "n"
 check "sam follows back out of visual" "$(mode_of sam)" "n"
 check "seq advanced once leaving visual" "$(seq_of sam)" "$((base_seq + 4))"
 
+# Applying a mode while the recipient is NOT in normal mode. Every entry in the
+# plugin's key table starts with CTRL-\ CTRL-N, so this passes through normal on
+# the way and fires an extra ModeChanged. Treating that transit as a real change
+# used to defeat the loop guard completely: the recipient broadcast a bogus `n`,
+# yanking everyone back to normal, then re-broadcast the mode it had just been
+# told to enter. Every transition tested above starts from normal, where the
+# transit fires nothing -- which is exactly why this went unnoticed.
+send_to alex 'i'
+sleep 1
+check "both are in insert before the cross-mode test" "$(mode_of alex)$(mode_of sam)" "ii"
+cross_seq=$(seq_of sam)
+send_to alex '<C-\><C-n>v'
+sleep 1.5
+check "alex reached visual" "$(mode_of alex)" "v"
+check "sam was dragged from insert to visual" "$(mode_of sam)" "v"
+# alex made exactly two genuine changes (i->n, n->v). Anything beyond that is
+# the recipient echoing changes that were forced on it.
+check "no echo storm: seq advanced by exactly two" "$(seq_of sam)" "$((cross_seq + 2))"
+send_to alex '<C-\><C-n>'
+sleep 1
+
 # The neovim#22263 guard: operator-pending must never reach the wire.
 before_seq=$(seq_of sam)
 send_to alex 'd'

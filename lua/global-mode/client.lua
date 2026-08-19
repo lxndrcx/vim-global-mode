@@ -14,7 +14,7 @@ local M = {}
 ---@field by string|nil       who last changed it
 ---@field seq integer         the server's change counter
 ---@field id string|nil       our client id
----@field peers table[]       everyone else connected
+---@field peers table[]       everyone connected, including us
 ---@field status string       "offline" | "connecting" | "online"
 M.state = { mode = nil, by = nil, seq = 0, id = nil, peers = {}, status = "offline" }
 
@@ -39,8 +39,6 @@ local function announce()
   end)
 end
 
--- Gated on the socket rather than on `status`, because the very first thing we
--- send is the hello that gets us to "online" in the first place.
 local function send(msg)
   if handle and not handle:is_closing() then
     handle:write(protocol.encode(msg))
@@ -74,15 +72,26 @@ end
 local function handle_message(msg)
   if msg.t == "welcome" then
     -- Only now are we genuinely usable: we have an id and we know the mode.
-    -- Reporting "online" from the moment the socket opened would leave a
-    -- window where the statusline and :checkhealth have nothing to show.
+    -- This is also the first proof the peer will keep the connection, so it is
+    -- the right place to clear the backoff — doing that on TCP connect instead
+    -- meant a server that accepted and immediately hung up was retried once a
+    -- second forever, with the escalating delay never engaging.
+    local was_online = M.state.status == "online"
     M.state.status = "online"
+    backoff = nil
     M.state.id = msg.id
     M.state.mode = msg.mode
     M.state.by = msg.by
     M.state.seq = msg.seq or 0
+    last_sent = msg.mode
     apply.apply(msg.mode)
     announce()
+    if not was_online then
+      local c = config.current
+      vim.schedule(function()
+        notify(("connected to %s:%d"):format(c.host, c.port))
+      end)
+    end
   elseif msg.t == "mode" then
     -- Ignore anything older than what we have already applied: after a
     -- reconnect, frames can arrive out of order.
@@ -123,17 +132,32 @@ local function consume(chunk)
   end
 end
 
-local function cleanup()
-  if handle and not handle:is_closing() then
-    handle:close()
+--- Close a socket and forget it. Safe to call on an already-closing handle.
+local function close_socket(sock)
+  if sock and not sock:is_closing() then
+    sock:close()
   end
+end
+
+local function cleanup()
+  close_socket(handle)
   handle = nil
   buffer = ""
   last_sent = nil
+  apply.reset()
   M.state.status = "offline"
   M.state.peers = {}
   M.state.id = nil
   announce()
+end
+
+--- Stop and forget any armed reconnect timer.
+local function clear_timer()
+  if timer then
+    timer:stop()
+    timer:close()
+    timer = nil
+  end
 end
 
 local schedule_reconnect
@@ -141,35 +165,75 @@ local schedule_reconnect
 local function connect()
   local c = config.current
   M.state.status = "connecting"
-  handle = vim.uv.new_tcp()
 
-  handle:connect(c.host, c.port, function(err)
-    if err then
-      cleanup()
-      schedule_reconnect()
-      return
-    end
+  -- Every callback below captures `sock` rather than reading the module-level
+  -- `handle`. If a stale socket's callback fires after a newer one has been
+  -- installed, it must act on its own socket, not stomp the live one.
+  local sock = vim.uv.new_tcp()
+  handle = sock
 
-    backoff = nil
-    send({
-      t = "hello",
-      user = c.user,
-      host = vim.uv.os_gethostname(),
-      nvim = tostring(vim.version()),
-    })
-    vim.schedule(function()
-      notify(("connected to %s:%d"):format(c.host, c.port))
-    end)
-
-    handle:read_start(function(read_err, chunk)
-      if read_err or not chunk then
-        cleanup()
-        schedule_reconnect()
+  -- luv requires a numeric address and raises rather than reporting to the
+  -- callback, so `host = "localhost"` would throw straight out of `setup()`.
+  local ok, err = pcall(function()
+    sock:connect(c.host, c.port, function(connect_err)
+      if connect_err or sock:is_closing() then
+        if handle == sock then
+          cleanup()
+          schedule_reconnect()
+        else
+          close_socket(sock)
+        end
         return
       end
-      consume(chunk)
+
+      -- Superseded while the connect was in flight: drop this socket quietly.
+      if handle ~= sock then
+        close_socket(sock)
+        return
+      end
+
+      send({
+        t = "hello",
+        user = c.user,
+        host = vim.uv.os_gethostname(),
+        -- Resolved at setup time: `vim.version` cannot be required from here.
+        nvim = config.nvim_version,
+      })
+      announce()
+
+      sock:read_start(function(read_err, chunk)
+        if handle ~= sock then
+          close_socket(sock)
+          return
+        end
+        if read_err or not chunk then
+          cleanup()
+          schedule_reconnect()
+          return
+        end
+        consume(chunk)
+      end)
     end)
   end)
+
+  if not ok then
+    close_socket(sock)
+    if handle == sock then
+      handle = nil
+      M.state.status = "offline"
+    end
+    vim.schedule(function()
+      notify(
+        ("cannot reach %s:%d — %s (the host must be a numeric address)"):format(
+          c.host,
+          c.port,
+          tostring(err)
+        ),
+        vim.log.levels.ERROR
+      )
+    end)
+    schedule_reconnect()
+  end
 end
 
 --- Retry with exponential backoff, so a server that is down does not turn into
@@ -182,18 +246,11 @@ schedule_reconnect = function()
   local c = config.current
   backoff = backoff and math.min(backoff * 2, c.reconnect.max) or c.reconnect.min
 
-  if timer then
-    timer:stop()
-    timer:close()
-  end
+  clear_timer()
   timer = vim.uv.new_timer()
   timer:start(backoff, 0, function()
-    if timer then
-      timer:stop()
-      timer:close()
-      timer = nil
-    end
-    if want_connection then
+    clear_timer()
+    if want_connection and not handle then
       connect()
     end
   end)
@@ -203,6 +260,9 @@ function M.connect()
   if handle then
     return
   end
+  -- A pending retry would otherwise fire later and replace the socket opened
+  -- here, leaking the first one and double-registering us with the server.
+  clear_timer()
   want_connection = true
   backoff = nil
   connect()
@@ -210,11 +270,7 @@ end
 
 function M.disconnect()
   want_connection = false
-  if timer then
-    timer:stop()
-    timer:close()
-    timer = nil
-  end
+  clear_timer()
   cleanup()
   M.state.mode = nil
   M.state.by = nil
