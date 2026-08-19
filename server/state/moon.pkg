@@ -1,0 +1,8 @@
+import {
+  "moonbitlang/core/json",
+  "moonbitlang/core/set",
+  "moonbitlang/async/aqueue",
+  "lxndrcx/global-mode-server/protocol",
+}
+
+supported_targets = "+native"

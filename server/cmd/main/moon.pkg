@@ -1,0 +1,13 @@
+import {
+  "moonbitlang/core/string",
+  "moonbitlang/core/env",
+  "moonbitlang/async",
+  "moonbitlang/async/socket",
+  "lxndrcx/global-mode-server/state",
+  "lxndrcx/global-mode-server/editors",
+  "lxndrcx/global-mode-server/web",
+}
+
+supported_targets = "+native"
+
+pkgtype(kind: "executable")

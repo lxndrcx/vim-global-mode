@@ -1,0 +1,170 @@
+*global-mode.txt*   One modal state, shared by everyone
+
+==============================================================================
+CONTENTS                                                       *global-mode*
+
+  1. Introduction ......................... |global-mode-introduction|
+  2. Setup ................................ |global-mode-setup|
+  3. Configuration ........................ |global-mode-config|
+  4. Commands ............................. |global-mode-commands|
+  5. Statusline ........................... |global-mode-statusline|
+  6. API .................................. |global-mode-api|
+  7. How it works ......................... |global-mode-internals|
+
+==============================================================================
+1. INTRODUCTION                                   *global-mode-introduction*
+
+There is one mode, and everybody is in it. Connect to a global mode server and
+your modal state is no longer yours: when anyone connected presses `i`, every
+editor on that server enters insert mode.
+
+This is a joke plugin. It works exactly as described.
+
+Requires Neovim 0.10 or newer. Pure Lua, no dependencies.
+
+==============================================================================
+2. SETUP                                                 *global-mode-setup*
+
+>lua
+    require("global-mode").setup({
+      host = "127.0.0.1",
+      port = 7777,
+      user = vim.env.USER,
+    })
+<
+The server lives in the `server/` directory of this repository and is written
+in MoonBit. Build and run it with: >
+
+    cd server
+    moon build --target native
+    ./_build/native/debug/build/cmd/main/main.exe --verbose
+<
+==============================================================================
+3. CONFIGURATION                                        *global-mode-config*
+
+                                                    *global-mode-setup-opts*
+host                    string (default "127.0.0.1")
+                        Address of the global mode server.
+
+port                    number (default 7777)
+                        Server port for editors. Note this is not the
+                        dashboard port.
+
+user                    string (default $USER)
+                        The name shown to everyone else when you change the
+                        mode. This is who gets blamed.
+
+auto_connect            boolean (default true)
+                        Connect on startup. Set false to require an explicit
+                        |:GlobalModeConnect|.
+
+notify                  boolean (default true)
+                        Announce connection and disconnection with
+                        |vim.notify()|.
+
+reconnect               table (default { min = 1000, max = 30000 })
+                        Exponential backoff bounds in milliseconds. The delay
+                        doubles from `min` on each failed attempt, capped at
+                        `max`.
+
+==============================================================================
+4. COMMANDS                                           *global-mode-commands*
+
+                                                       *:GlobalModeConnect*
+:GlobalModeConnect      Connect to the server and submit to the global mode.
+
+                                                    *:GlobalModeDisconnect*
+:GlobalModeDisconnect   Disconnect and reclaim your own modal state.
+
+                                                        *:GlobalModeStatus*
+:GlobalModeStatus       Report the global mode, who set it, and how many other
+                        editors are connected.
+
+:checkhealth global-mode
+                        Report connection state, the global mode, and the
+                        roster of connected editors.
+
+==============================================================================
+5. STATUSLINE                                       *global-mode-statusline*
+
+For lualine: >lua
+    sections = { lualine_x = { require("global-mode").lualine() } }
+<
+Or build your own from the pieces: >lua
+    require("global-mode").statusline()  -- "INSERT · alex"
+    require("global-mode").highlight()   -- "GlobalModeInsert"
+<
+                                                  *GlobalModeChanged*
+A |User| autocmd fires on every change, so other statusline plugins can hook
+redraws: >lua
+    vim.api.nvim_create_autocmd("User", {
+      pattern = "GlobalModeChanged",
+      callback = function() ... end,
+    })
+<
+                                                  *global-mode-highlights*
+These highlight groups are defined, each linked to a sensible default:
+
+    GlobalModeNormal        GlobalModeInsert        GlobalModeVisual
+    GlobalModeReplace       GlobalModeCommand       GlobalModeTerminal
+
+==============================================================================
+6. API                                                     *global-mode-api*
+
+global-mode.setup({opts})                            *global-mode.setup()*
+                Configure and, unless disabled, connect.
+
+global-mode.connect()                              *global-mode.connect()*
+global-mode.disconnect()                        *global-mode.disconnect()*
+global-mode.is_connected()                    *global-mode.is_connected()*
+                True once connected *and* welcomed by the server, meaning the
+                global mode is actually known.
+
+global-mode.mode()                                    *global-mode.mode()*
+                The global mode as a single character (`n`, `i`, `v`, `V`, `b`,
+                `R`, `c`, `t`), or nil when offline.
+
+global-mode.statusline()                        *global-mode.statusline()*
+global-mode.highlight()                          *global-mode.highlight()*
+global-mode.lualine()                              *global-mode.lualine()*
+global-mode.status()                                *global-mode.status()*
+global-mode.others()                                *global-mode.others()*
+                Everyone connected except you.
+
+global-mode.state                                        *global-mode.state*
+                Table with `mode`, `by`, `seq`, `id`, `peers` and `status`.
+
+==============================================================================
+7. HOW IT WORKS                                      *global-mode-internals*
+
+A |ModeChanged| autocmd reports your mode to the server, which records it as
+the global mode and pushes it to every other editor. Those apply it with
+|nvim_feedkeys()|, always prefixed with CTRL-\ CTRL-N — the one escape that
+works from every mode, terminal mode included.
+
+Three things stop one keypress becoming an infinite storm:
+
+  1. The server never echoes a change back to whoever caused it.
+  2. The client suppresses the |ModeChanged| that its own forced change
+     produces.
+  3. Re-reporting the mode already in force is a no-op on the server, and does
+     not advance the sequence counter.
+
+                                                   *global-mode-operator-pending*
+Operator-pending mode is dropped before anything is scheduled. A |ModeChanged|
+autocmd calling |vim.schedule()| could once re-trigger itself in a loop between
+normal and operator-pending until it saturated a core (neovim issue #22263).
+So pressing `d` or `y` does not affect anyone else: you can still operate on
+text, you simply cannot inflict a half-finished operator on the room.
+
+Terminal mode is received and displayed but never forced.
+
+A circuit breaker caps applied changes at 20 per second. If it trips, a warning
+is issued and applies pause briefly, so a bug degrades into a log line rather
+than a hung editor.
+
+                                                       *global-mode-security*
+There is no authentication. Anyone who can reach the port can change the mode
+for everyone connected. Do not expose it to the public internet.
+
+vim:tw=78:ts=8:noet:ft=help:norl:

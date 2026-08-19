@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  server:
+    name: MoonBit server
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MoonBit
+        run: |
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
+          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+
+      - name: Check formatting
+        working-directory: server
+        run: moon fmt --check
+
+      - name: Check
+        working-directory: server
+        run: moon check --target native --deny-warn
+
+      - name: Test
+        working-directory: server
+        run: moon test --target native
+
+  plugin:
+    name: Lua plugin
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: stable
+
+      - name: Unit tests
+        run: nvim -l tests/protocol_spec.lua
+
+      - uses: JohnnyMorganz/stylua-action@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          version: latest
+          args: --check lua plugin tests
+
+  end-to-end:
+    name: Two editors, one mode
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MoonBit
+        run: |
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
+          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+
+      - uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: stable
+
+      - name: Build the server
+        working-directory: server
+        run: moon build --target native
+
+      # The server on its own, driven by fake editors -- no Neovim involved.
+      - name: Server end-to-end
+        run: |
+          ./server/_build/native/debug/build/cmd/main/main.exe \
+            --bind 127.0.0.1 --port 7777 --http-port 7778 &
+          sleep 2
+          node scripts/fake-client.js --clients 3
+
+      # The real thing: two headless Neovim instances sharing one mode.
+      - name: Two real editors
+        run: ./tests/two-editors.sh
