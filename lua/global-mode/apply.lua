@@ -90,6 +90,14 @@ function M.apply(mode)
   end
 
   vim.schedule(function()
+    -- Drop anything whose keys never landed before consulting the queue.
+    -- Without this the deadline was only ever checked from `consume`, which
+    -- fires on a local `ModeChanged` -- so an apply that produced no mode
+    -- change at all (E21 in a `nomodifiable` buffer, say) left an entry that
+    -- suppressed every later apply of that same mode, including the heartbeat
+    -- resync. The one mechanism meant to repair drift was defeated by it.
+    expire()
+
     -- Compare against the mode we are already committed to entering, not the
     -- one we happen to be in. Keys fed by an earlier apply may still be sitting
     -- in the typeahead, so `mode(1)` lags reality: when two frames arrive in a

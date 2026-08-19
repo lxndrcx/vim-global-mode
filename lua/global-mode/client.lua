@@ -49,9 +49,21 @@ end
 ---@param mode string  a normalized mode
 function M.send_mode(mode)
   -- The loop guard: never report back a change we made because we were told to.
+  -- Consumed even while offline, so a leftover expectation cannot outlive the
+  -- disconnection and swallow a genuine change after reconnecting.
   if apply.consume(mode) then
     return
   end
+
+  -- While offline there is no global mode to have an opinion about. Recording
+  -- one here would undo what `cleanup` deliberately cleared: `mode()` is
+  -- documented to return nil when offline, and without this guard the very next
+  -- keystroke repopulated it, so it started reporting a global mode again with
+  -- nothing on the other end.
+  if M.state.status ~= "online" then
+    return
+  end
+
   -- Nor re-report what we already told it.
   if mode == last_sent then
     return

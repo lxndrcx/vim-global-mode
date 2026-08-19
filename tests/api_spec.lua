@@ -11,6 +11,7 @@ vim.opt.runtimepath:prepend(vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(
 local gm = require("global-mode")
 local config = require("global-mode.config")
 local client = require("global-mode.client")
+local apply = require("global-mode.apply")
 
 local failures, checks = 0, 0
 local function eq(label, actual, expected)
@@ -148,6 +149,34 @@ eq("blame is cleared too", client.state.by, nil)
 eq("status goes offline", client.state.status, "offline")
 eq("the roster is emptied", #client.state.peers, 0)
 eq("statusline is empty again", gm.statusline(), "")
+
+-- An apply whose keys never landed leaves an expectation behind. Once it is
+-- past its deadline it must not suppress a re-apply of the same mode: the
+-- deadline used to be consulted only from `consume`, which fires on a local
+-- ModeChanged, so a stale entry silently swallowed every later apply of that
+-- mode — including the heartbeat resync, the one mechanism that repairs drift.
+apply.reset()
+table.insert(apply.expected, { mode = "i", deadline = vim.uv.now() - 1 })
+apply.apply("i")
+vim.wait(300, function()
+  return #apply.expected == 1 and apply.expected[1].deadline > vim.uv.now()
+end, 10)
+eq("a stale expectation does not block a re-apply", #apply.expected, 1)
+checks = checks + 1
+if apply.expected[1] and apply.expected[1].deadline <= vim.uv.now() then
+  failures = failures + 1
+  print("FAIL the expired expectation was left in place instead of re-applying")
+end
+apply.reset()
+
+-- A local mode change while offline must not invent a global mode. `cleanup`
+-- clears it on disconnect precisely so `mode()` honours its documented nil
+-- contract; without a guard here the next keystroke put it straight back.
+client.state.status = "offline"
+client.state.mode, client.state.by = nil, nil
+client.send_mode("i")
+eq("send_mode offline does not invent a global mode", gm.mode(), nil)
+eq("nor a culprit", client.state.by, nil)
 
 print(("%d checks, %d failures"):format(checks, failures))
 os.exit(failures == 0 and 0 or 1)
