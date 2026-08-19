@@ -1,0 +1,13 @@
+{
+  "extraKnownMarketplaces": {
+    "moonbit-code-plugins": {
+      "source": {
+        "source": "github",
+        "repo": "moonbitlang/skills"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "moonbit-skills@moonbit-code-plugins": true
+  }
+}
