@@ -135,5 +135,19 @@ eq("lualine cond tracks connection", component.cond(), true)
 client.state.status = "offline"
 eq("lualine cond is false when offline", component.cond(), false)
 
+-- Losing the server must clear the mode, not leave a stale one behind. Anything
+-- built on the documented `mode()` contract would otherwise show a mode that
+-- nobody is in, indefinitely -- and a dropped server, not an explicit
+-- :GlobalModeDisconnect, is the common way a session ends.
+client.state.status = "online"
+client.state.mode, client.state.by, client.state.id = "i", "alex", "c1"
+client.state.peers = { { id = "c1", user = "me", host = "here" } }
+require("global-mode.client").disconnect()
+eq("mode() is nil after losing the connection", gm.mode(), nil)
+eq("blame is cleared too", client.state.by, nil)
+eq("status goes offline", client.state.status, "offline")
+eq("the roster is emptied", #client.state.peers, 0)
+eq("statusline is empty again", gm.statusline(), "")
+
 print(("%d checks, %d failures"):format(checks, failures))
 os.exit(failures == 0 and 0 or 1)

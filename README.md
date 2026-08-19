@@ -25,7 +25,7 @@ binary, no Rust toolchain. Neovim's built-in `vim.uv` provides the TCP client.
 {
   "lxndrcx/vim-global-mode",
   opts = {
-    host = "127.0.0.1",
+    host = "127.0.0.1", -- must be a numeric address; libuv does not resolve names
     port = 7777,
     user = vim.env.USER,
   },
@@ -36,10 +36,21 @@ Requires Neovim 0.10 or newer.
 
 ## Run the server
 
-The server is written in [MoonBit](https://www.moonbitlang.com/). Build it once:
+The server is written in [MoonBit](https://www.moonbitlang.com/). If you do not
+have the toolchain:
+
+```sh
+curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
+export PATH="$HOME/.moon/bin:$PATH"
+```
+
+Then build it once. `moon update` is not optional on a fresh install — the
+toolchain ships no registry index, so resolving `moonbitlang/async` fails with
+*"module was not found in the registry"* until you run it:
 
 ```sh
 cd server
+moon update
 moon build --target native
 ./_build/native/debug/build/cmd/main/main.exe --verbose
 ```
@@ -55,7 +66,10 @@ global mode: dashboard on http://0.0.0.0:7778
 | `--port PORT` | `7777` | port for editors |
 | `--http-port PORT` | `7778` | port for the web dashboard |
 | `--no-web` | | do not serve the dashboard |
-| `--verbose` | | log connections and mode changes |
+| `--verbose`, `-v` | | log connections and mode changes |
+| `--help`, `-h` | | show usage |
+
+`--port` and `--http-port` must differ; the server refuses to start otherwise.
 
 ## The dashboard
 
@@ -80,7 +94,7 @@ Or use the pieces directly — `require("global-mode").statusline()` returns
 | `:GlobalModeConnect` | submit to the global mode |
 | `:GlobalModeDisconnect` | reclaim your own modal state |
 | `:GlobalModeStatus` | report the global mode and who set it |
-| `:checkhealth global-mode` | connection, latency and roster |
+| `:checkhealth global-mode` | connection state, the global mode, and the roster |
 
 ## How it works
 
@@ -90,10 +104,26 @@ and pushes it to every other editor, which applies it with `nvim_feedkeys`.
 Two details do most of the work:
 
 **The server never echoes a change back to whoever caused it,** and the client
-suppresses the `ModeChanged` that its own forced change produces. Without both,
-one keypress becomes an infinite ping-pong storm between editors. A third
-backstop lives on the server: re-reporting the mode already in force is a no-op
-that does not advance the sequence counter. One keypress, one increment.
+stays quiet about the `ModeChanged` events its own forced change produces.
+Without both, one keypress becomes an infinite ping-pong storm between editors.
+A third backstop lives on the server: re-reporting the mode already in force is a
+no-op that does not advance the sequence counter. One keypress, one increment.
+
+The client side of that is fussier than it sounds. Every applied mode is fed as
+`CTRL-\ CTRL-N` followed by a mode key, so applying one from a *different*
+non-normal mode passes through normal and fires **two** `ModeChanged` events, not
+one — and two remote frames can be in flight before either one's keys land. So
+the client tracks a queue of modes it is expecting, treats a transit through
+normal as its own, and expires an entry after half a second in case the keys
+never take effect at all.
+
+**The heartbeat carries the global mode, and that is the only resync there is.**
+Every five seconds the server states the authoritative mode; a client already in
+it does nothing, and one that has drifted is pulled back. Without it, several
+ways of falling out of step — a frame dropped from a full outbox, two editors
+changing mode in the same instant, an apply refused by the rate limiter — leave
+an editor permanently disagreeing with everyone else, because the protocol
+otherwise only ever announces *changes*.
 
 **Operator-pending mode is dropped before it reaches anything.** A `ModeChanged`
 autocmd that schedules work could once loop between normal and operator-pending
@@ -107,15 +137,29 @@ for free. The dashboard gets a real WebSocket, because a browser wants one.
 ## Tests
 
 ```sh
-cd server && moon test --target native   # protocol and fan-out logic
-nvim -l tests/protocol_spec.lua          # mode normalization
-node scripts/fake-client.js --clients 3  # server end-to-end, no Neovim needed
-./tests/two-editors.sh                   # two real Neovim instances, one mode
+(cd server && moon test --target native)  # protocol, fan-out and hub invariants
+nvim -l tests/protocol_spec.lua           # mode normalization
+nvim -l tests/api_spec.lua                # config validation and the statusline API
+node tests/loop-guard.js nvim             # the loop guard, against a controlled server
+node tests/resync.js nvim                 # the heartbeat resync
+./tests/two-editors.sh                    # two real Neovim instances, one mode
 ```
 
-`tests/two-editors.sh` is the one that matters: it starts a server, launches two
+`scripts/fake-client.js` drives the **real** server with fake editors, so start
+one first:
+
+```sh
+./server/_build/native/debug/build/cmd/main/main.exe --bind 127.0.0.1 &
+node scripts/fake-client.js --clients 3
+```
+
+`tests/two-editors.sh` is the headline — it starts its own server, launches two
 headless Neovim instances, presses `i` in one and asserts the other ends up in
-insert mode.
+insert mode. But it is not sufficient on its own, and says so in its own
+comments: a real editor walking `i`→`v` steps its peers through normal, so the
+loop guard's transit rule is unreachable from it. `tests/loop-guard.js` pushes
+modes directly, which is what the `welcome` path and a backlogged client do, and
+is the only thing covering that rule.
 
 To watch traffic while driving real editors by hand:
 

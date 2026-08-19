@@ -166,6 +166,12 @@ local function cleanup()
   M.state.status = "offline"
   M.state.peers = {}
   M.state.id = nil
+  -- Forget the mode too. Keeping it meant `mode()` reported a global mode long
+  -- after the server died, which is the documented contract's opposite and the
+  -- common failure -- only an explicit :GlobalModeDisconnect used to clear it.
+  -- A reconnect re-establishes all of this from the welcome frame.
+  M.state.mode = nil
+  M.state.by = nil
   announce()
 end
 

@@ -106,7 +106,8 @@ const MAX_FIELD_UNITS : Int = 64
 /// `abort`, which is a process-level panic rather than a catchable error, so a
 /// single `hello` frame carrying such a name took the entire server down for
 /// everybody on the first broadcast that touched it. There is nowhere further
-/// downstream to defend this, so it is rejected on the way in.
+/// downstream to defend this, so such a name is refused on the way in and the
+/// default is stored instead -- the frame itself is still accepted.
 fn is_encodable(s : String) -> Bool {
   let n = s.length()
   let mut i = 0

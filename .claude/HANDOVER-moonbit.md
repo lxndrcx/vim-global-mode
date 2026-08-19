@@ -41,7 +41,10 @@ statement. `moonbit-orientation`, `moonbit-extract-spec-test` and
 `make-moonbit-c-bindings` are native to that repo and state nothing at all.
 
 None of this touches what is committed here, which is only the marketplace
-name, the plugin id and two download URLs. It matters if a later session
+name and plugin id (in `.claude/hooks/session-start-skills.sh`) and two download
+URLs (in `session-start-binaries.sh`) -- `.claude/settings.json` itself now
+carries only the hook wiring, with `enabledPlugins` and `extraKnownMarketplaces`
+both empty. It matters if a later session
 decides to vendor: `moonbit-agent-guide` and `moonbit-refactoring` are the two
 that can be copied in with their LICENSE files and no inference. Skills whose
 license has to be inferred are worth leaving on the install path.
@@ -144,15 +147,18 @@ moon update          # REQUIRED on a fresh install: no registry index ships with
 cd server
 moon fmt --check
 moon check --target native --deny-warn
-moon test --target native          # 19 tests
+moon test --target native          # 23 tests
 moon build --target native
 ```
 
 Full suite, from the repo root:
 
 ```sh
-nvim -l tests/protocol_spec.lua           # 45 checks
-node scripts/fake-client.js --clients 3   # needs a server running
+nvim -l tests/protocol_spec.lua           # 45 checks, mode normalization
+nvim -l tests/api_spec.lua                # 39 checks, config + statusline API
+node tests/loop-guard.js nvim             # the loop guard, vs a controlled server
+node tests/resync.js nvim                 # the heartbeat resync
+node scripts/fake-client.js --clients 3   # needs a server already running
 ./tests/two-editors.sh                    # starts its own server on its own port
 stylua --check lua plugin tests
 ```
@@ -161,22 +167,23 @@ stylua --check lua plugin tests
 instances over RPC. Neovim is not installed in the base container; fetch the
 `nvim-linux-x86_64.tar.gz` release if needed.
 
-## Review state
+## Review state — all six are done
 
-Six adversarial reviews were planned, run one at a time with findings verified
-against the code before any fix.
+Six adversarial reviews were planned and all six ran, one at a time, with every
+finding verified against the code before any fix and a regression test added
+wherever one could be. **Do not redo these.**
 
-- **Review 1 (MoonBit concurrency)** — done. Three high-severity bugs found and
-  fixed across commits `b15c5c3` and `f3d6c41`, each reproduced before fixing.
-- **Review 2 (Lua handle lifecycle)** — was running at handover.
-- **Reviews 3–6** — protocol/distributed races, security and DoS, test validity,
-  documentation accuracy. Not started. Reviews 3 and 4 touch the MoonBit server
-  and may benefit from the skills too.
+| Review | Outcome |
+| --- | --- |
+| 1 MoonBit concurrency | 3 high bugs: ghost clients never reaped, the outbox discarding the wrong end, an uncapped quadratic reader burning a core |
+| 2 Lua handle lifecycle | the loop guard was defeated whenever anyone was in a non-normal mode; a startup hang from `vim.version` in a fast context |
+| 3 Protocol / distributed | no storms, but several routes to permanent disagreement; fixed by making the heartbeat carry the authoritative mode |
+| 4 Security / DoS | one `hello` frame with an unpaired surrogate aborted the whole process; roster amplification; uncapped names |
+| 5 Test validity | by mutation: several shipped fixes were deletable with every suite green |
+| 6 Documentation | this file included — see below |
 
-If you pick up the reviews: verify every finding against the real code before
-accepting it, reproduce the failure where it can be reproduced, add a regression
-test where testable, re-run all four suites, and commit per dimension so an
-interrupted run still leaves the branch better off.
+The one piece of that plan still outstanding is the task this handover exists
+for: exploring MoonBit's built-in formal verification.
 
 ## Two things that are deliberate, not bugs
 

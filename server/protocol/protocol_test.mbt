@@ -175,7 +175,7 @@ test "a properly paired surrogate is still accepted" {
 }
 
 ///|
-test "over-long fields are rejected rather than stored" {
+test "over-long fields fall back to the default rather than being stored" {
   // They would otherwise be copied into every roster frame and state snapshot.
   let long = "L".repeat(500)
   let line = "{\"t\":\"hello\",\"user\":\"\{long}\",\"host\":\"h\",\"nvim\":\"0\"}"
