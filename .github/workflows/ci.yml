@@ -55,19 +55,46 @@ jobs:
           repository: lxndrcx/vim-global-mode-server-moonbit
           path: .server
 
+      # Retried: the CDN reset a connection mid-download and failed this job
+      # once already. Every step below reaches the network, and none of them is
+      # this PR's code, so a blip should cost a few seconds rather than a red
+      # build somebody has to interpret.
       - name: Install MoonBit
         run: |
-          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
-          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+          for attempt in 1 2 3; do
+            if curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash; then
+              echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+              exit 0
+            fi
+            echo "MoonBit install attempt $attempt failed; retrying" >&2
+            sleep $((attempt * 5))
+          done
+          echo "MoonBit install failed after 3 attempts" >&2
+          exit 1
 
       # A fresh install ships no registry index, so dependency resolution fails
       # with "module was not found in the registry" until this runs.
       - name: Fetch the module registry
-        run: moon update
+        run: |
+          for attempt in 1 2 3; do
+            moon update && exit 0
+            echo "moon update attempt $attempt failed; retrying" >&2
+            sleep $((attempt * 5))
+          done
+          echo "moon update failed after 3 attempts" >&2
+          exit 1
 
+      # Resolves moonbitlang/async over the network on a cold runner.
       - name: Build the server
         working-directory: .server
-        run: moon build --target native
+        run: |
+          for attempt in 1 2 3; do
+            moon build --target native && exit 0
+            echo "server build attempt $attempt failed; retrying" >&2
+            sleep $((attempt * 5))
+          done
+          echo "server build failed after 3 attempts" >&2
+          exit 1
 
       - uses: rhysd/action-setup-vim@v1
         with:
