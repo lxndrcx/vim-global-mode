@@ -1,13 +1,16 @@
 {
-  "extraKnownMarketplaces": {
-    "moonbit-code-plugins": {
-      "source": {
-        "source": "github",
-        "repo": "moonbitlang/skills"
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/session-start.sh"
+          }
+        ]
       }
-    }
+    ]
   },
-  "enabledPlugins": {
-    "moonbit-skills@moonbit-code-plugins": true
-  }
+  "enabledPlugins": {},
+  "extraKnownMarketplaces": {}
 }
