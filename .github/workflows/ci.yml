@@ -17,6 +17,11 @@ jobs:
           curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
           echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
 
+      # A fresh install ships no registry index, so dependency resolution fails
+      # with "module was not found in the registry" until this runs.
+      - name: Fetch the module registry
+        run: moon update
+
       - name: Check formatting
         working-directory: server
         run: moon fmt --check
@@ -59,6 +64,11 @@ jobs:
         run: |
           curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
           echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+
+      # A fresh install ships no registry index, so dependency resolution fails
+      # with "module was not found in the registry" until this runs.
+      - name: Fetch the module registry
+        run: moon update
 
       - uses: rhysd/action-setup-vim@v1
         with:
