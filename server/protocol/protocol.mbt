@@ -94,13 +94,57 @@ pub fn decode_client(line : String) -> ClientMsg? {
 }
 
 ///|
+/// The longest name or hostname we will store. Generous for a username, and it
+/// bounds what gets copied into every roster frame and state snapshot.
+const MAX_FIELD_UNITS : Int = 64
+
+///|
+/// True if this string can be encoded as UTF-8.
+///
+/// MoonBit strings are sequences of UTF-16 code units, and JSON may legally
+/// carry an unpaired surrogate -- `"\ud800"` parses fine. Encoding one calls
+/// `abort`, which is a process-level panic rather than a catchable error, so a
+/// single `hello` frame carrying such a name took the entire server down for
+/// everybody on the first broadcast that touched it. There is nowhere further
+/// downstream to defend this, so it is rejected on the way in.
+fn is_encodable(s : String) -> Bool {
+  let n = s.length()
+  let mut i = 0
+  while i < n {
+    guard s.get(i) is Some(unit) else { return false }
+    let c = unit.to_int()
+    if c >= 0xD800 && c <= 0xDBFF {
+      // A high surrogate is only valid immediately followed by a low one.
+      guard i + 1 < n && s.get(i + 1) is Some(next) else { return false }
+      let d = next.to_int()
+      if d < 0xDC00 || d > 0xDFFF {
+        return false
+      }
+      i += 2
+    } else if c >= 0xDC00 && c <= 0xDFFF {
+      return false
+    } else {
+      i += 1
+    }
+  }
+  true
+}
+
+///|
+/// Read a string field, falling back to `default` if it is missing, too long,
+/// or not encodable.
 fn str_field(
   fields : Map[String, Json],
   key : String,
   default : String,
 ) -> String {
   match fields.get(key) {
-    Some(String(s)) => s
+    Some(String(s)) =>
+      if s.length() <= MAX_FIELD_UNITS && is_encodable(s) {
+        s
+      } else {
+        default
+      }
     _ => default
   }
 }

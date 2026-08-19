@@ -13,6 +13,8 @@ pub struct Client {
   /// Frames waiting to go out. The connection's writer task is the only
   /// consumer, so nothing else ever touches the socket for output.
   outbox : @aqueue.Queue[String]
+  /// Whether this connection has already said hello.
+  mut identified : Bool
 }
 
 ///|
@@ -59,6 +61,7 @@ pub fn Hub::join(self : Hub, user : String, host : String) -> Client {
     user,
     host,
     outbox: @aqueue.Queue(kind=DiscardOldest(OUTBOX_DEPTH)),
+    identified: false,
   }
   self.clients[client.id] = client
   client
@@ -73,12 +76,21 @@ pub fn Hub::leave(self : Hub, client : Client) -> Unit {
 
 ///|
 /// Identify a client that said hello after connecting.
+///
+/// Only the first `hello` on a connection counts. Every identify fans a fresh
+/// roster out to everyone, so an unthrottled one is an O(n) amplifier: one
+/// client repeating `hello` pinned a core with 150 idle editors connected. A
+/// client has no legitimate reason to introduce itself twice.
 pub fn Hub::identify(
   self : Hub,
   client : Client,
   user : String,
   host : String,
 ) -> Unit {
+  if client.identified {
+    return
+  }
+  client.identified = true
   client.user = user
   client.host = host
   self.broadcast_roster()

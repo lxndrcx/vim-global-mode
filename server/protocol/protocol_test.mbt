@@ -116,3 +116,48 @@ test "state snapshot carries the human-readable label" {
   assert_eq(fields.get("label"), Some(Json::string("V-BLOCK")))
   assert_eq(fields.get("seq"), Some(Json::number(3)))
 }
+
+///|
+test "a name that cannot be encoded as UTF-8 is rejected" {
+  // JSON may legally carry an unpaired surrogate. MoonBit strings are UTF-16,
+  // so such a name parses fine and then aborts the *process* when it is encoded
+  // for the next broadcast — one frame took the whole server down for everyone.
+  let lone_high =
+    #|{"t":"hello","user":"\ud800","host":"h","nvim":"0"}
+  assert_eq(
+    decode_client(lone_high),
+    Some(Hello(user="anon", host="h", nvim="0")),
+  )
+  let lone_low =
+    #|{"t":"hello","user":"a","host":"\udc00","nvim":"0"}
+  assert_eq(decode_client(lone_low), Some(Hello(user="a", host="?", nvim="0")))
+  let reversed =
+    #|{"t":"hello","user":"\udc00\ud800","host":"h","nvim":"0"}
+  assert_eq(
+    decode_client(reversed),
+    Some(Hello(user="anon", host="h", nvim="0")),
+  )
+}
+
+///|
+test "a properly paired surrogate is still accepted" {
+  // Rejecting lone surrogates must not reject legitimate astral characters.
+  let emoji =
+    #|{"t":"hello","user":"😀","host":"h","nvim":"0"}
+  guard decode_client(emoji) is Some(Hello(user~, ..)) else {
+    fail("a valid surrogate pair was rejected")
+  }
+  assert_eq(user.char_length(), 1)
+}
+
+///|
+test "over-long fields are rejected rather than stored" {
+  // They would otherwise be copied into every roster frame and state snapshot.
+  let long = "L".repeat(500)
+  let line = "{\"t\":\"hello\",\"user\":\"\{long}\",\"host\":\"h\",\"nvim\":\"0\"}"
+  assert_eq(decode_client(line), Some(Hello(user="anon", host="h", nvim="0")))
+  // A name at the limit is kept.
+  let ok = "L".repeat(64)
+  let line2 = "{\"t\":\"hello\",\"user\":\"\{ok}\",\"host\":\"h\",\"nvim\":\"0\"}"
+  assert_eq(decode_client(line2), Some(Hello(user=ok, host="h", nvim="0")))
+}

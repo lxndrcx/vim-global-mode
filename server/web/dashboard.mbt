@@ -94,9 +94,19 @@ let dashboard_html : String =
   #|    modeEl.textContent = s.label;
   #|    modeEl.className = s.mode;
   #|    seqEl.textContent = s.seq;
-  #|    blameEl.innerHTML = s.seq > 0
-  #|      ? "<b></b> did this".replace("<b></b>", "<b>" + esc(s.by) + "</b>")
-  #|      : "nobody has done anything yet";
+  #|    // Built from nodes rather than innerHTML. `esc()` did neutralise the
+  #|    // markup, but feeding an attacker-controlled name to String.replace as
+  #|    // the REPLACEMENT string meant $&, $` and $' spliced fragments of the
+  #|    // template back in, so a user called `$'` produced garbled output.
+  #|    blameEl.textContent = "";
+  #|    if (s.seq > 0) {
+  #|      var who = document.createElement("b");
+  #|      who.textContent = s.by;
+  #|      blameEl.appendChild(who);
+  #|      blameEl.appendChild(document.createTextNode(" did this"));
+  #|    } else {
+  #|      blameEl.textContent = "nobody has done anything yet";
+  #|    }
   #|    rosterEl.innerHTML = "";
   #|    if (!s.clients.length) {
   #|      var li = document.createElement("li");
@@ -115,12 +125,6 @@ let dashboard_html : String =
   #|      li.appendChild(where);
   #|      rosterEl.appendChild(li);
   #|    });
-  #|  }
-  #|
-  #|  function esc(s) {
-  #|    var d = document.createElement("div");
-  #|    d.textContent = s;
-  #|    return d.innerHTML;
   #|  }
   #|
   #|  function connect() {

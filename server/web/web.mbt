@@ -1,4 +1,9 @@
 ///|
+/// The most dashboards we will hold at once. The editor listener has always
+/// been capped; this side was not, and `subscribe_dashboard` grows a map.
+const MAX_DASHBOARDS : Int = 64
+
+///|
 /// Serve the dashboard: a page showing the global mode, who set it, and who is
 /// currently subject to it, updated live over a WebSocket.
 pub async fn serve(
@@ -11,6 +16,7 @@ pub async fn serve(
   server.run_forever(
     (request, _body, conn) => route(hub, request, conn, verbose~),
     allow_failure=true,
+    max_connections=MAX_DASHBOARDS,
   )
 }
 
@@ -21,10 +27,16 @@ async fn route(
   conn : @http.ServerConnection,
   verbose~ : Bool,
 ) -> Unit {
-  guard request.meth is Get else {
-    conn.send_response(405, "Method Not Allowed")
-    conn.end_response()
-    return
+  // HEAD is answered like GET without a body: browsers, proxies and uptime
+  // monitors all issue it, and 405 for a page that plainly exists is wrong.
+  let body_wanted = match request.meth {
+    Get => true
+    Head => false
+    _ => {
+      conn.send_response(405, "Method Not Allowed")
+      conn.end_response()
+      return
+    }
   }
   // Query strings are irrelevant here, but a browser may still send one.
   let path = match request.path.find("?") {
@@ -36,16 +48,22 @@ async fn route(
       conn.send_response(200, "OK", extra_headers={
         "content-type": "text/html; charset=utf-8",
         "cache-control": "no-store",
+        "x-content-type-options": "nosniff",
       })
-      conn.write(dashboard_html)
+      if body_wanted {
+        conn.write(dashboard_html)
+      }
       conn.end_response()
     }
     "/api/state" => {
       conn.send_response(200, "OK", extra_headers={
         "content-type": "application/json",
         "cache-control": "no-store",
+        "x-content-type-options": "nosniff",
       })
-      conn.write(hub.state_json())
+      if body_wanted {
+        conn.write(hub.state_json())
+      }
       conn.end_response()
     }
     "/ws" => watch(hub, request, conn, verbose~)
