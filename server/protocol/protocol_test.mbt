@@ -118,24 +118,48 @@ test "state snapshot carries the human-readable label" {
 }
 
 ///|
-test "a name that cannot be encoded as UTF-8 is rejected" {
-  // JSON may legally carry an unpaired surrogate. MoonBit strings are UTF-16,
-  // so such a name parses fine and then aborts the *process* when it is encoded
-  // for the next broadcast — one frame took the whole server down for everyone.
-  let lone_high =
-    #|{"t":"hello","user":"\ud800","host":"h","nvim":"0"}
-  assert_eq(
-    decode_client(lone_high),
-    Some(Hello(user="anon", host="h", nvim="0")),
+/// Assert that a line carrying an unpaired surrogate never yields one.
+///
+/// Two outcomes are acceptable, and which one you get depends on the toolchain:
+/// some versions of the JSON parser reject `"\ud800"` outright, others parse it
+/// into a lone UTF-16 code unit and leave the rejection to us. The invariant is
+/// the same either way -- no unencodable string is ever stored -- so assert that
+/// rather than one version's behaviour.
+fn refuses_surrogate(line : String, field : String) -> Unit raise {
+  match decode_client(line) {
+    None => ()
+    Some(Hello(user~, host~, ..)) =>
+      if field == "user" {
+        assert_eq(user, "anon")
+      } else {
+        assert_eq(host, "?")
+      }
+    _ => fail("expected a hello frame or nothing at all")
+  }
+}
+
+///|
+test "a name that cannot be encoded as UTF-8 never reaches storage" {
+  // JSON may carry an unpaired surrogate, and MoonBit strings are UTF-16, so
+  // such a name can parse fine and then abort the *process* when it is encoded
+  // for the next broadcast: one frame took the whole server down for everyone.
+  refuses_surrogate(
+    (
+      #|{"t":"hello","user":"\ud800","host":"h","nvim":"0"}
+    ),
+    "user",
   )
-  let lone_low =
-    #|{"t":"hello","user":"a","host":"\udc00","nvim":"0"}
-  assert_eq(decode_client(lone_low), Some(Hello(user="a", host="?", nvim="0")))
-  let reversed =
-    #|{"t":"hello","user":"\udc00\ud800","host":"h","nvim":"0"}
-  assert_eq(
-    decode_client(reversed),
-    Some(Hello(user="anon", host="h", nvim="0")),
+  refuses_surrogate(
+    (
+      #|{"t":"hello","user":"a","host":"\udc00","nvim":"0"}
+    ),
+    "host",
+  )
+  refuses_surrogate(
+    (
+      #|{"t":"hello","user":"\udc00\ud800","host":"h","nvim":"0"}
+    ),
+    "user",
   )
 }
 
