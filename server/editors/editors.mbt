@@ -4,6 +4,15 @@
 const MAX_EDITORS : Int = 256
 
 ///|
+/// The longest protocol line we will accept, in bytes. Real frames run to a
+/// couple of hundred bytes; anything approaching this is not a mode change.
+const MAX_LINE_BYTES : Int = 8192
+
+///|
+/// How much to take off the socket at a time.
+const READ_CHUNK : Int = 4096
+
+///|
 /// How often to ping an idle editor, in milliseconds.
 const PING_INTERVAL_MS : Int = 20_000
 
@@ -76,6 +85,17 @@ async fn handle(
 
 ///|
 /// Read newline-delimited JSON until the editor goes away.
+///
+/// This does its own framing rather than using `read_until("\n")`, which is
+/// unusable against untrusted input on two counts. It has no length cap; and
+/// its buffer grows by rounding up to a segment with no doubling, recopying
+/// everything read so far roughly every kilobyte. A single client sending
+/// bytes without a newline therefore costs quadratic CPU on a single-threaded
+/// server -- measured at 100% of a core and +56MB RSS for 21MiB of input,
+/// starving every other editor and the dashboard.
+///
+/// Reading in bounded chunks fixes both: the line buffer cannot exceed
+/// `MAX_LINE_BYTES`, and a client that overruns it is simply dropped.
 async fn read_loop(
   hub : @state.Hub,
   client : @state.Client,
@@ -83,27 +103,55 @@ async fn read_loop(
   missed_pongs : Ref[Int],
   verbose~ : Bool,
 ) -> Unit {
-  while conn.read_until("\n") is Some(line) {
-    // Any traffic at all proves the editor is alive.
+  let line = @buffer.Buffer(size_hint=256)
+  for ;; {
+    guard conn.read_some(max_len=READ_CHUNK) is Some(chunk) else { return }
+    // Any bytes at all prove the editor is alive. Waiting for a complete line
+    // would hang up on a client whose message is merely still in flight.
     missed_pongs.val = 0
-    match @protocol.decode_client(line.trim(chars="\r\n").to_owned()) {
-      Some(Hello(user~, host~, nvim~)) => {
+    for i in 0..<chunk.length() {
+      let byte = chunk[i]
+      if byte == b'\n' {
+        dispatch(hub, client, line.to_bytes(), verbose~)
+        line.reset()
+      } else if line.length() >= MAX_LINE_BYTES {
         if verbose {
-          @logging.log("  \{client.id} is \{user}@\{host} (nvim \{nvim})")
+          @logging.log("  \{client.id} sent an over-long line; dropping it")
         }
-        hub.identify(client, user, host)
+        return
+      } else {
+        line.write_byte(byte)
       }
-      Some(SetMode(mode~)) =>
-        if hub.set_mode(client, mode) && verbose {
-          @logging.log(
-            "  \{client.user} made it \{mode.label()} for everyone (seq \{hub.seq})",
-          )
-        }
-      Some(Pong) => ()
-      // Unparseable lines are ignored rather than fatal: a stray `nc` poking
-      // at the port should not disconnect anybody.
-      None => ()
     }
+  }
+}
+
+///|
+/// Act on one decoded line. Anything unparseable is ignored rather than fatal:
+/// a stray `nc` poking at the port should not disconnect anybody.
+fn dispatch(
+  hub : @state.Hub,
+  client : @state.Client,
+  raw : Bytes,
+  verbose~ : Bool,
+) -> Unit {
+  // Lossy on purpose: invalid UTF-8 should fail to parse as JSON, not raise.
+  let text = @utf8.decode_lossy(raw[:]).trim(chars="\r").to_owned()
+  match @protocol.decode_client(text) {
+    Some(Hello(user~, host~, nvim~)) => {
+      if verbose {
+        @logging.log("  \{client.id} is \{user}@\{host} (nvim \{nvim})")
+      }
+      hub.identify(client, user, host)
+    }
+    Some(SetMode(mode~)) =>
+      if hub.set_mode(client, mode) && verbose {
+        @logging.log(
+          "  \{client.user} made it \{mode.label()} for everyone (seq \{hub.seq})",
+        )
+      }
+    Some(Pong) => ()
+    None => ()
   }
 }
 

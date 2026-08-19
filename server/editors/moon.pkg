@@ -1,4 +1,6 @@
 import {
+  "moonbitlang/core/buffer",
+  "moonbitlang/core/encoding/utf8",
   "lxndrcx/global-mode-server/logging",
   "moonbitlang/async",
   "moonbitlang/async/socket",
