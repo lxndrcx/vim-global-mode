@@ -80,10 +80,10 @@ test "garbage does not decode" {
 ///|
 test "encoded frames are single newline-terminated lines" {
   let frames = [
-    encode_welcome("c1", Normal, 0, "server"),
-    encode_mode(Insert, 7, "alex", "c1"),
+    encode_welcome("c1", Normal, 0L, "server"),
+    encode_mode(Insert, 7L, "alex", "c1"),
     encode_roster([{ id: "c1", user: "alex", host: "thinkpad" }]),
-    encode_ping(),
+    encode_ping(Normal, 0L, "server"),
   ]
   for frame in frames {
     assert_true(frame.has_suffix("\n"))
@@ -107,7 +107,7 @@ test "user-supplied names cannot break out of the JSON frame" {
 ///|
 test "state snapshot carries the human-readable label" {
   let json = @json.parse(
-    encode_state(VisualBlock, 3, "alex", [
+    encode_state(VisualBlock, 3L, "alex", [
       { id: "c1", user: "alex", host: "thinkpad" },
     ]),
   )

@@ -90,8 +90,15 @@ function M.apply(mode)
   end
 
   vim.schedule(function()
-    -- Re-check inside the scheduled callback: things move between then and now.
-    if protocol.normalize(vim.fn.mode(1)) == mode then
+    -- Compare against the mode we are already committed to entering, not the
+    -- one we happen to be in. Keys fed by an earlier apply may still be sitting
+    -- in the typeahead, so `mode(1)` lags reality: when two frames arrive in a
+    -- single read -- which any latency or a busy main loop will coalesce --
+    -- the second was discarded as a no-op and the editor was left in the first
+    -- one's mode permanently, believing it was in the second's.
+    local committed = M.expected[#M.expected]
+    local current = committed and committed.mode or protocol.normalize(vim.fn.mode(1))
+    if current == mode then
       return
     end
 

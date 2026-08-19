@@ -14,7 +14,7 @@ const READ_CHUNK : Int = 4096
 
 ///|
 /// How often to ping an idle editor, in milliseconds.
-const PING_INTERVAL_MS : Int = 20_000
+const PING_INTERVAL_MS : Int = 5_000
 
 ///|
 /// Pings that may go unanswered before we assume the editor is gone. TCP will

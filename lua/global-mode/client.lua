@@ -109,6 +109,24 @@ local function handle_message(msg)
     announce()
   elseif msg.t == "ping" then
     send({ t = "pong" })
+    -- The heartbeat carries the authoritative state, and adopting it is the
+    -- only resync this protocol has. Every way an editor can drift out of step
+    -- -- a frame discarded from a full outbox, two changes racing so the winner
+    -- never learns its own `seq`, an apply dropped by the circuit breaker --
+    -- would otherwise be permanent, because nothing else ever re-states the
+    -- global mode. `apply` is a no-op when we are already in that mode, so a
+    -- client in step does nothing here.
+    if type(msg.mode) == "string" and protocol.MODES[msg.mode] then
+      local seq = msg.seq or 0
+      if seq >= M.state.seq then
+        M.state.mode = msg.mode
+        M.state.by = msg.by
+        M.state.seq = seq
+        last_sent = msg.mode
+        apply.apply(msg.mode)
+        announce()
+      end
+    end
   end
 end
 

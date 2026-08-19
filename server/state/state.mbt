@@ -29,7 +29,7 @@ pub struct Dashboard {
 /// mutation below runs to completion before another task observes it.
 pub struct Hub {
   mut mode : @protocol.Mode
-  mut seq : Int
+  mut seq : Int64
   mut by : String
   clients : Map[String, Client]
   dashboards : Map[Int, Dashboard]
@@ -41,7 +41,7 @@ pub struct Hub {
 pub fn Hub::new() -> Hub {
   {
     mode: Normal,
-    seq: 0,
+    seq: 0L,
     by: "nobody",
     clients: {},
     dashboards: {},
@@ -176,8 +176,7 @@ pub fn Hub::push_state(self : Hub) -> Unit {
 ///|
 /// Ask one editor to prove it is still there.
 pub fn Hub::ping_one(self : Hub, client : Client) -> Unit {
-  ignore(self)
-  send(client.outbox, @protocol.encode_ping())
+  send(client.outbox, @protocol.encode_ping(self.mode, self.seq, self.by))
 }
 
 ///|

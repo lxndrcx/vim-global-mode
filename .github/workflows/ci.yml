@@ -54,6 +54,11 @@ jobs:
       - name: Loop guard
         run: node tests/loop-guard.js nvim
 
+      # The heartbeat is the protocol's only resync. Without it, several ways an
+      # editor can drift out of step with the server are permanent.
+      - name: Heartbeat resync
+        run: node tests/resync.js nvim
+
       - uses: JohnnyMorganz/stylua-action@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}

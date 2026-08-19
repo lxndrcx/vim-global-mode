@@ -127,14 +127,14 @@ fn Peer::to_json(self : Peer) -> Json {
 pub fn encode_welcome(
   id : String,
   mode : Mode,
-  seq : Int,
+  seq : Int64,
   by : String,
 ) -> String {
   line({
     "t": "welcome".to_json(),
     "id": id.to_json(),
     "mode": mode.to_wire().to_json(),
-    "seq": seq.to_json(),
+    "seq": seq.to_double().to_json(),
     "by": by.to_json(),
   })
 }
@@ -144,14 +144,14 @@ pub fn encode_welcome(
 /// if the server ever echoes one back; today it never does.
 pub fn encode_mode(
   mode : Mode,
-  seq : Int,
+  seq : Int64,
   by : String,
   by_id : String,
 ) -> String {
   line({
     "t": "mode".to_json(),
     "mode": mode.to_wire().to_json(),
-    "seq": seq.to_json(),
+    "seq": seq.to_double().to_json(),
     "by": by.to_json(),
     "by_id": by_id.to_json(),
   })
@@ -167,15 +167,26 @@ pub fn encode_roster(peers : Array[Peer]) -> String {
 }
 
 ///|
-pub fn encode_ping() -> String {
-  line({ "t": "ping".to_json() })
+/// Encode a heartbeat.
+///
+/// It carries the authoritative mode as well, so an editor that has drifted
+/// out of step — because a frame was discarded from its outbox, because two
+/// changes raced, or because an apply was dropped — is corrected on the next
+/// beat instead of staying wrong forever. There is no other resync path.
+pub fn encode_ping(mode : Mode, seq : Int64, by : String) -> String {
+  line({
+    "t": "ping".to_json(),
+    "mode": mode.to_wire().to_json(),
+    "seq": seq.to_double().to_json(),
+    "by": by.to_json(),
+  })
 }
 
 ///|
 /// The full server state, as the dashboard and `GET /api/state` want it.
 pub fn encode_state(
   mode : Mode,
-  seq : Int,
+  seq : Int64,
   by : String,
   peers : Array[Peer],
 ) -> String {
@@ -183,7 +194,7 @@ pub fn encode_state(
     "t": "state".to_json(),
     "mode": mode.to_wire().to_json(),
     "label": mode.label().to_json(),
-    "seq": seq.to_json(),
+    "seq": seq.to_double().to_json(),
     "by": by.to_json(),
     "clients": Json::array(peers.map(Peer::to_json)),
   }).stringify()
