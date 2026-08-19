@@ -1,0 +1,150 @@
+# Handover: MoonBit work on vim-global-mode
+
+Written for a **fresh session** that has the `moonbit-skills@moonbit-code-plugins`
+plugin loaded. The session that built this project registered that marketplace in
+`.claude/settings.json` but could not use it: Claude Code's settings watcher only
+watches directories that already had a settings file at session start, and
+`.claude/` had none. So the config is correct on disk and inert in that session,
+and a subagent spawned there would have inherited the same empty skill set.
+
+Everything below is verified — built, run, and measured — not remembered. Where
+something is unverified it says so.
+
+## The project
+
+A joke Neovim plugin: every connected editor shares **one global mode**. Press `i`
+and everyone on the server is in insert mode. Pure-Lua plugin (`lua/`, `plugin/`),
+MoonBit server (`server/`), live WebSocket dashboard.
+
+- Branch: `claude/neovim-global-mode-plugin-hnn95k`
+- Draft PR: https://github.com/lxndrcx/vim-global-mode/pull/1 (base `main`)
+- CI: green at time of writing
+
+## The task this handover exists for
+
+**Explore MoonBit's built-in formal verification and assess whether it can be
+applied to the server.** It is task #12 in the originating session, deliberately
+sequenced last so it starts from code whose invariants have already survived
+adversarial review rather than code that merely compiles.
+
+### Step one: find out what actually exists
+
+Do not assume the feature exists or behaves as you remember. The installed
+toolchain is `moon 0.1.20260814` / `moonc v0.10.8`. Check `moon --help`, the
+official docs, the `moonbitlang/core` source, and — this is why this file exists —
+whatever the MoonBit skills say. A negative result is a perfectly good outcome:
+if verification is absent, immature, or a poor fit for code dominated by async
+I/O, say so plainly rather than contorting the server to suit a tool.
+
+### The properties worth proving
+
+These are exactly the invariants that adversarial review stress-tested by
+experiment. Verification would complement the tests, never replace the end-to-end
+proof that two real editors share a mode.
+
+| Property | Where | Currently tested by |
+| --- | --- | --- |
+| `Mode::of_wire`/`to_wire` round-trip totality; nothing outside the eight-mode alphabet is ever accepted | `server/protocol/protocol.mbt` | `protocol_test.mbt` |
+| `Hub::set_mode` advances `seq` by exactly one on a real change, not at all on a no-op | `server/state/state.mbt` | `state_test.mbt` |
+| The originator is never a member of the broadcast set | `server/state/state.mbt` | `state_test.mbt` |
+| Outbox depth stays bounded regardless of message volume | `server/state/state.mbt` | `state_test.mbt` |
+
+The `state` package is the best target: it is the only package holding mutable
+state, and it is pure logic with no I/O. `protocol` is pure too. `editors` and
+`web` are async I/O and probably out of scope for verification.
+
+## MoonBit facts established the hard way
+
+Each of these cost real debugging time. They were checked against the vendored
+source at `server/.mooncakes/moonbitlang/async/src/`, whose `.mbti` files give
+exact signatures.
+
+**Task groups.** `@async.with_task_group(group => {...})` returns when the group
+*body* returns. Tasks spawned `no_wait=true` are cancelled at that point; tasks
+spawned without it are waited for. `group.return_immediately(())` ends the group
+*now* — using it right after spawning silently cancels everything you just
+spawned, which cost an afternoon.
+
+**Closing a socket does not wake a parked reader.** `IoHandle::close` detaches the
+fd, closes it, and nulls it. A coroutine parked in `wait_read` is never resumed.
+To end a connection from another task, end the task group instead. This was a real
+bug: unresponsive editors were never reaped and lingered in the roster forever.
+
+**`try_put` does not honour `DiscardOldest`.** It returns `false` when full; only
+the async `put` discards. Ignoring the return value inverts the policy to
+discard-*newest*, which silently strands a slow client on a stale mode. See
+`send` in `state/state.mbt` for the sync workaround.
+
+**`read_until("\n")` is unusable against untrusted input.** No length cap, and its
+buffer grows by rounding up to a segment with no doubling — so it recopies
+everything read so far roughly every kilobyte. Measured: 21 MiB of newline-free
+input burned 100% of a core and +56 MB RSS. `editors/editors.mbt` now frames lines
+itself with a bounded reader.
+
+**Package manifests are `moon.pkg`**, not `moon.pkg.json`, in this toolchain:
+`import { ... }`, `supported_targets = "+native"`, `pkgtype(kind: "executable")`,
+`options("native-stub": [ "flush.c" ])`.
+
+**No `exit` in core**, and `println` buffers — a long-running server never reaches
+the flush at exit, so `--verbose` output is invisible in a pipe. Both are solved
+by FFI: see `logging/flush.c` and `c_exit` in `cmd/main/main.mbt`.
+
+**Enum constructors often need qualifying** in array literals
+(`let all : Array[Mode] = [...]`), and `moon fmt` reshapes code — an exact-match
+edit written against pre-format source will silently fail to apply. Re-read before
+editing.
+
+## Building and testing
+
+```sh
+# The toolchain may not be installed in a fresh container:
+curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
+export PATH="$HOME/.moon/bin:$PATH"
+moon update          # REQUIRED on a fresh install: no registry index ships with it
+
+cd server
+moon fmt --check
+moon check --target native --deny-warn
+moon test --target native          # 19 tests
+moon build --target native
+```
+
+Full suite, from the repo root:
+
+```sh
+nvim -l tests/protocol_spec.lua           # 45 checks
+node scripts/fake-client.js --clients 3   # needs a server running
+./tests/two-editors.sh                    # starts its own server on its own port
+stylua --check lua plugin tests
+```
+
+`tests/two-editors.sh` is the one that matters — two real headless Neovim
+instances over RPC. Neovim is not installed in the base container; fetch the
+`nvim-linux-x86_64.tar.gz` release if needed.
+
+## Review state
+
+Six adversarial reviews were planned, run one at a time with findings verified
+against the code before any fix.
+
+- **Review 1 (MoonBit concurrency)** — done. Three high-severity bugs found and
+  fixed across commits `b15c5c3` and `f3d6c41`, each reproduced before fixing.
+- **Review 2 (Lua handle lifecycle)** — was running at handover.
+- **Reviews 3–6** — protocol/distributed races, security and DoS, test validity,
+  documentation accuracy. Not started. Reviews 3 and 4 touch the MoonBit server
+  and may benefit from the skills too.
+
+If you pick up the reviews: verify every finding against the real code before
+accepting it, reproduce the failure where it can be reproduced, add a regression
+test where testable, re-run all four suites, and commit per dimension so an
+interrupted run still leaves the branch better off.
+
+## Two things that are deliberate, not bugs
+
+- **No authentication.** Anyone who can reach the port changes everyone's mode.
+  Documented in the README as not for the public internet. Note it; do not "fix" it.
+- **Operator-pending is dropped** before anything is scheduled
+  (`lua/global-mode/protocol.lua`). A `ModeChanged` autocmd calling `vim.schedule`
+  could once loop to 100% CPU ([neovim#22263](https://github.com/neovim/neovim/issues/22263))
+  and this plugin is exactly that shape. `tests/two-editors.sh` has a regression
+  check. Do not remove it.
