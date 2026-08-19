@@ -17,7 +17,8 @@ container *fetch* it. A later session started with the marketplace declared and
 project. The hooks install everything the repo needs and are no-ops once it is
 all present.
 
-`moon`, `nvim` and `stylua` land via `session-start-binaries.sh`, which runs
+`moon`, `nvim`, `stylua`, `z3` and `cvc5` land via `session-start-binaries.sh`,
+which runs
 asynchronously -- a cold container measured 34s, and the session does not wait
 for it. **So a session can start before `moon` exists.** If a `moon`, `nvim` or
 `stylua` command fails with "command not found" in the first half-minute of a
@@ -77,6 +78,40 @@ official docs, the `moonbitlang/core` source, and — this is why this file exis
 whatever the MoonBit skills say. A negative result is a perfectly good outcome:
 if verification is absent, immature, or a poor fit for code dominated by async
 I/O, say so plainly rather than contorting the server to suit a tool.
+
+**Partial answer, from setting up the solver.** The feature exists and is not
+hypothetical: `moon prove` is a real subcommand ("Prove the current package"),
+it is Why3-backed -- `--why3-config` overrides the generated default, and
+`MOON_PROVE_PRELUDE_OVERRIDE` replaces `moonbit_builtin_prelude.mlw` -- and it
+dispatches to an external SMT solver. Without one it fails with:
+
+    failed to locate any SMT solver for `moon prove`:
+    searched for `alt-ergo`, `cvc5`, `z3` in PATH
+
+Z3 and CVC5 are both installed by the binaries hook, which clears that. Two
+rather than one because Why3 runs several provers over the same goals -- the
+generated config carries a `[partial_prover]` strategy and
+`running_provers_max = 16` -- so a goal one solver cannot close often falls to
+another. Alt-Ergo, the third `moon prove` accepts, is not installed: it is not
+in apt and would mean an opam/OCaml build. Add it if the two SMT solvers leave
+goals unproved.
+
+Their apt versions are not the drag they look. MoonBit bundles its own Why3 at
+`$MOON_HOME/share/why3`, and its newest Z3 driver is `z3_487.drv`, written for
+4.8.7 -- apt's 4.8.12 sits just past it, where a bleeding-edge Z3 would be
+further from the shipped driver rather than closer. CVC5's driver is
+version-generic and apt's 1.1.2 is recent. `moon explain
+--attribute` lists `#proof_pure`, `#proof_import` and `#proof_external`, and
+`#proof_pure` has real documented limits: no verification contracts, no direct
+or mutual recursion. Proof output is expected at
+`_build/verif/<pkg>/<pkg>.proof.json`.
+
+What is **not** yet worked out: how a package opts in. `moon prove protocol`
+answers "Package ... is not proof-enabled; skipping", and the key is not
+`enable_proof`, `proof`, `verify` or `proof_enabled` in `moon.pkg` -- all four
+are rejected as unexpected keys. Find the real one before assuming anything
+about the rest. That the solver runs is settled (`z3` solves a trivial SMT-LIB
+problems correctly); that this server can be proof-enabled is not.
 
 ### The properties worth proving
 
