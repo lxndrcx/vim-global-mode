@@ -32,14 +32,21 @@ Requires Neovim 0.10 or newer. Pure Lua, no dependencies.
       user = vim.env.USER,
     })
 <
-The server lives in the `server/` directory of this repository and is written
-in MoonBit. Build and run it with: >
+The server is a separate project, written in MoonBit:
 
-    cd server
+    https://github.com/lxndrcx/vim-global-mode-server-moonbit
+
+Build and run it with: >
+
+    git clone https://github.com/lxndrcx/vim-global-mode-server-moonbit
+    cd vim-global-mode-server-moonbit
     moon update              # required once: a fresh toolchain has no registry
     moon build --target native
     ./_build/native/debug/build/cmd/main/main.exe --verbose
 <
+Nothing in this plugin needs the MoonBit toolchain; it speaks to whatever
+server is listening on the configured port.
+
 ==============================================================================
 3. CONFIGURATION                                        *global-mode-config*
 

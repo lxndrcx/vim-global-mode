@@ -5,20 +5,48 @@
 # the only way genuine mode transitions happen. Starts its own server on its
 # own port so the result never depends on ambient state.
 #
+# The server is a separate repository, so this test needs a binary built from
+# lxndrcx/vim-global-mode-server-moonbit. `scripts/build-server.sh` produces one
+# and prints its path; anything already built works too.
+#
 # Usage: tests/two-editors.sh [path-to-server-binary]
+#        GLOBAL_MODE_SERVER=/path/to/main.exe tests/two-editors.sh
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SERVER_BIN="${1:-$HERE/server/_build/native/release/build/cmd/main/main.exe}"
-[ -x "$SERVER_BIN" ] || SERVER_BIN="$HERE/server/_build/native/debug/build/cmd/main/main.exe"
+
+# An explicitly named binary is used or nothing is. Falling back past a path
+# someone typed out would run a *different* server than the one they asked for
+# and still say "all checks passed", which is the worst outcome available here.
+SERVER_BIN="${1:-${GLOBAL_MODE_SERVER:-}}"
+if [ -n "$SERVER_BIN" ]; then
+  if [ ! -x "$SERVER_BIN" ]; then
+    echo "no server binary at $SERVER_BIN"
+    exit 1
+  fi
+else
+  # Otherwise search: the checkout scripts/build-server.sh manages, then a
+  # sibling clone. Release before debug in each, a release build being the
+  # deliberate one.
+  for candidate in \
+    "$HERE/.server/_build/native/release/build/cmd/main/main.exe" \
+    "$HERE/.server/_build/native/debug/build/cmd/main/main.exe" \
+    "$HERE/../vim-global-mode-server-moonbit/_build/native/release/build/cmd/main/main.exe" \
+    "$HERE/../vim-global-mode-server-moonbit/_build/native/debug/build/cmd/main/main.exe"
+  do
+    [ -x "$candidate" ] && { SERVER_BIN="$candidate"; break; }
+  done
+fi
+
+if [ -z "$SERVER_BIN" ]; then
+  echo "no server binary found — run ./scripts/build-server.sh, or pass a path"
+  exit 1
+fi
+echo "server: $SERVER_BIN"
+
 WORK="$(mktemp -d)"
 PORT=$(( (RANDOM % 10000) + 20000 ))
 HTTP_PORT=$((PORT + 1))
-
-if [ ! -x "$SERVER_BIN" ]; then
-  echo "no server binary at $SERVER_BIN — run 'moon build --target native' in server/ first"
-  exit 1
-fi
 command -v nvim >/dev/null || { echo "nvim not on PATH"; exit 1; }
 
 fails=0

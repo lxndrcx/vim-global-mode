@@ -34,24 +34,17 @@ binary, no Rust toolchain. Neovim's built-in `vim.uv` provides the TCP client.
 
 Requires Neovim 0.10 or newer.
 
-## Run the server
+## Run a server
 
-The server is written in [MoonBit](https://www.moonbitlang.com/). If you do not
-have the toolchain:
-
-```sh
-curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
-export PATH="$HOME/.moon/bin:$PATH"
-```
-
-Then build it once. `moon update` is not optional on a fresh install — the
-toolchain ships no registry index, so resolving `moonbitlang/async` fails with
-*"module was not found in the registry"* until you run it:
+The server is a separate project:
+[lxndrcx/vim-global-mode-server-moonbit](https://github.com/lxndrcx/vim-global-mode-server-moonbit).
+It is written in MoonBit and builds to a single native binary — nothing here
+depends on the toolchain unless you want to run it yourself:
 
 ```sh
-cd server
-moon update
-moon build --target native
+git clone https://github.com/lxndrcx/vim-global-mode-server-moonbit
+cd vim-global-mode-server-moonbit
+moon update && moon build --target native
 ./_build/native/debug/build/cmd/main/main.exe --verbose
 ```
 
@@ -60,22 +53,11 @@ global mode: editors may connect on 0.0.0.0:7777
 global mode: dashboard on http://0.0.0.0:7778
 ```
 
-| Flag | Default | Meaning |
-| --- | --- | --- |
-| `--bind ADDR` | `0.0.0.0` | address to listen on |
-| `--port PORT` | `7777` | port for editors |
-| `--http-port PORT` | `7778` | port for the web dashboard |
-| `--no-web` | | do not serve the dashboard |
-| `--verbose`, `-v` | | log connections and mode changes |
-| `--help`, `-h` | | show usage |
-
-`--port` and `--http-port` must differ; the server refuses to start otherwise.
-
-## The dashboard
-
+Its flags, limits and dashboard are documented there. The two ports are the only
+things this side needs to know: editors connect to `7777` over raw TCP, and
 `http://localhost:7778` shows the current global mode in large letters, who is
-responsible for it, and everyone currently subject to it. It updates live over
-a WebSocket. `GET /api/state` returns the same thing as JSON.
+responsible for it, and everyone currently subject to it — live, over a
+WebSocket.
 
 ## Statusline
 
@@ -137,31 +119,43 @@ for free. The dashboard gets a real WebSocket, because a browser wants one.
 ## Tests
 
 ```sh
-(cd server && moon test --target native)  # protocol, fan-out and hub invariants
-nvim -l tests/protocol_spec.lua           # mode normalization
-nvim -l tests/api_spec.lua                # config validation and the statusline API
-node tests/loop-guard.js nvim             # the loop guard, against a controlled server
-node tests/resync.js nvim                 # the heartbeat resync
-./tests/two-editors.sh                    # two real Neovim instances, one mode
+nvim -l tests/protocol_spec.lua   # mode normalization
+nvim -l tests/api_spec.lua        # config validation and the statusline API
+node tests/loop-guard.js nvim     # the loop guard, against a controlled server
+node tests/resync.js nvim         # the heartbeat resync
+stylua --check lua plugin tests
 ```
 
-`scripts/fake-client.js` drives the **real** server with fake editors, so start
-one first:
+None of those needs the server repository: the loop-guard and resync tests
+bring their own server, a few lines of JavaScript apiece that say exactly what
+each test needs said.
+
+`tests/two-editors.sh` is the headline, and the one that needs the real thing —
+it starts a server, launches two headless Neovim instances, presses `i` in one
+and asserts the other ends up in insert mode. `scripts/build-server.sh` clones
+and builds the server repository for it (installing MoonBit if you have not
+got it) and prints the binary's path:
 
 ```sh
-./server/_build/native/debug/build/cmd/main/main.exe --bind 127.0.0.1 &
-node scripts/fake-client.js --clients 3
+./scripts/build-server.sh   # into .server/, which is gitignored
+./tests/two-editors.sh      # finds it there
 ```
 
-`tests/two-editors.sh` is the headline — it starts its own server, launches two
-headless Neovim instances, presses `i` in one and asserts the other ends up in
-insert mode. But it is not sufficient on its own, and says so in its own
-comments: a real editor walking `i`→`v` steps its peers through normal, so the
-loop guard's transit rule is unreachable from it. `tests/loop-guard.js` pushes
-modes directly, which is what the `welcome` path and a backlogged client do, and
-is the only thing covering that rule.
+Or point it at a build you already have:
 
-To watch traffic while driving real editors by hand:
+```sh
+./tests/two-editors.sh /path/to/main.exe
+GLOBAL_MODE_SERVER=/path/to/main.exe ./tests/two-editors.sh
+```
+
+But it is not sufficient on its own, and says so in its own comments: a real
+editor walking `i`→`v` steps its peers through normal, so the loop guard's
+transit rule is unreachable from it. `tests/loop-guard.js` pushes modes
+directly, which is what the `welcome` path and a backlogged client do, and is
+the only thing covering that rule.
+
+To watch traffic while driving real editors by hand, the server repository has
+`scripts/fake-client.js`:
 
 ```sh
 node scripts/fake-client.js --watch --user spy
