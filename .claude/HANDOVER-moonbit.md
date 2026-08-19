@@ -29,9 +29,22 @@ are read at session start to decide what the session knows. Run either by hand:
     CLAUDE_CODE_REMOTE=true ./.claude/hooks/session-start-skills.sh
 
 Skills load from the plugin cache, from `.claude/skills/`, and from
-`~/.claude/skills/`. Nothing is vendored into this repo: `moonbitlang/skills`
-ships no LICENSE file, and `moonbit-agent-guide` alone costs ~23.1k tokens on
-invoke, so the install-on-demand route is deliberate rather than incidental.
+`~/.claude/skills/`. Nothing is vendored into this repo, deliberately. Cost is
+half the reason -- the nine skills are ~1,187 tokens always-on, and
+`moonbit-agent-guide` alone is ~23.1k on invoke. Licensing is the other half:
+`moonbitlang/skills` has no root LICENSE and licenses each skill separately, so
+only `moonbit-agent-guide` (Apache-2.0) and `moonbit-refactoring` (MIT) state
+one. Six more are mirrored per `skills.sources.json` and inherit whatever their
+upstream repo says -- `moonbit-proof` among them, from
+`moonbitlang/moonbit-agent-guide`, so Apache-2.0 by inference rather than by
+statement. `moonbit-orientation`, `moonbit-extract-spec-test` and
+`make-moonbit-c-bindings` are native to that repo and state nothing at all.
+
+None of this touches what is committed here, which is only the marketplace
+name, the plugin id and two download URLs. It matters if a later session
+decides to vendor: `moonbit-agent-guide` and `moonbit-refactoring` are the two
+that can be copied in with their LICENSE files and no inference. Skills whose
+license has to be inferred are worth leaving on the install path.
 
 Everything below is verified — built, run, and measured — not remembered. Where
 something is unverified it says so.
