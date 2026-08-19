@@ -1,11 +1,12 @@
 #!/bin/bash
 #
-# SessionStart hook (async): the binaries this repo's CI needs.
+# SessionStart hook (async): the binaries this repo is worked on with.
 #
 # A remote session starts from a fresh container with none of them: no MoonBit
-# toolchain, no Neovim, no StyLua. Versions are whatever is current, matching
-# ci.yml, which pins nothing either -- so a session and CI agree with each
-# other even though neither is reproducible against an old commit.
+# toolchain, no Neovim, no StyLua, no SMT solver. The first three track whatever
+# is current, matching ci.yml, which pins nothing either -- so a session and CI
+# agree with each other even though neither is reproducible against an old
+# commit. Z3 is not a CI dependency at all; it is here for `moon prove`.
 #
 # This runs asynchronously, so the session starts immediately and the downloads
 # land behind it. See the race note below before using anything installed here.
@@ -78,6 +79,27 @@ if [ -n "$STYLUA_ARCH" ] && [ ! -x "$LOCAL_BIN/stylua" ]; then
   rm -rf "$tmp"
 else
   echo "StyLua already present."
+fi
+
+# --- Z3: the SMT solver behind `moon prove` -------------------------------
+# `moon prove` is Why3-backed and dispatches to an external solver: without one
+# it fails with "failed to locate any SMT solver for `moon prove`: searched for
+# `alt-ergo`, `cvc5`, `z3` in PATH". Z3 is the one installed here, so the
+# verification work the handover describes has a solver to run against.
+#
+# From apt rather than a GitHub release, unlike the tools above. Z3's release
+# assets embed a glibc version in their filenames, so there is no stable
+# `releases/latest/download/...` URL to derive, and api.github.com is not
+# reachable from these containers to look one up. The tradeoff is age: apt
+# carries 4.8.12 where upstream is well past it. If a proof turns out to need a
+# newer solver, pin a release asset URL here or install `cvc5` instead --
+# `moon prove` accepts either.
+if ! command -v z3 >/dev/null 2>&1; then
+  echo "Installing Z3..."
+  DEBIAN_FRONTEND=noninteractive apt-get update -qq
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends z3
+else
+  echo "Z3 already present."
 fi
 
 echo "Binaries ready."

@@ -17,7 +17,7 @@ container *fetch* it. A later session started with the marketplace declared and
 project. The hooks install everything the repo needs and are no-ops once it is
 all present.
 
-`moon`, `nvim` and `stylua` land via `session-start-binaries.sh`, which runs
+`moon`, `nvim`, `stylua` and `z3` land via `session-start-binaries.sh`, which runs
 asynchronously -- a cold container measured 34s, and the session does not wait
 for it. **So a session can start before `moon` exists.** If a `moon`, `nvim` or
 `stylua` command fails with "command not found" in the first half-minute of a
@@ -77,6 +77,28 @@ official docs, the `moonbitlang/core` source, and — this is why this file exis
 whatever the MoonBit skills say. A negative result is a perfectly good outcome:
 if verification is absent, immature, or a poor fit for code dominated by async
 I/O, say so plainly rather than contorting the server to suit a tool.
+
+**Partial answer, from setting up the solver.** The feature exists and is not
+hypothetical: `moon prove` is a real subcommand ("Prove the current package"),
+it is Why3-backed -- `--why3-config` overrides the generated default, and
+`MOON_PROVE_PRELUDE_OVERRIDE` replaces `moonbit_builtin_prelude.mlw` -- and it
+dispatches to an external SMT solver. Without one it fails with:
+
+    failed to locate any SMT solver for `moon prove`:
+    searched for `alt-ergo`, `cvc5`, `z3` in PATH
+
+Z3 is now installed by the binaries hook, which clears that. `moon explain
+--attribute` lists `#proof_pure`, `#proof_import` and `#proof_external`, and
+`#proof_pure` has real documented limits: no verification contracts, no direct
+or mutual recursion. Proof output is expected at
+`_build/verif/<pkg>/<pkg>.proof.json`.
+
+What is **not** yet worked out: how a package opts in. `moon prove protocol`
+answers "Package ... is not proof-enabled; skipping", and the key is not
+`enable_proof`, `proof`, `verify` or `proof_enabled` in `moon.pkg` -- all four
+are rejected as unexpected keys. Find the real one before assuming anything
+about the rest. That the solver runs is settled (`z3` solves a trivial SMT-LIB
+problem correctly); that this server can be proof-enabled is not.
 
 ### The properties worth proving
 
