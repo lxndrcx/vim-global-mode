@@ -3,10 +3,11 @@
 # SessionStart hook (async): the binaries this repo is worked on with.
 #
 # A remote session starts from a fresh container with none of them: no MoonBit
-# toolchain, no Neovim, no StyLua, no SMT solver. The first three track whatever
+# toolchain, no Neovim, no StyLua, no SMT solvers. The first three track whatever
 # is current, matching ci.yml, which pins nothing either -- so a session and CI
 # agree with each other even though neither is reproducible against an old
-# commit. Z3 is not a CI dependency at all; it is here for `moon prove`.
+# commit. The solvers are not CI dependencies at all; they are here for `moon
+# prove`.
 #
 # This runs asynchronously, so the session starts immediately and the downloads
 # land behind it. See the race note below before using anything installed here.
@@ -81,25 +82,40 @@ else
   echo "StyLua already present."
 fi
 
-# --- Z3: the SMT solver behind `moon prove` -------------------------------
-# `moon prove` is Why3-backed and dispatches to an external solver: without one
-# it fails with "failed to locate any SMT solver for `moon prove`: searched for
-# `alt-ergo`, `cvc5`, `z3` in PATH". Z3 is the one installed here, so the
-# verification work the handover describes has a solver to run against.
+# --- SMT solvers: the provers behind `moon prove` --------------------------
+# `moon prove` is Why3-backed and dispatches to external solvers: with none it
+# fails outright with "failed to locate any SMT solver for `moon prove`:
+# searched for `alt-ergo`, `cvc5`, `z3` in PATH".
 #
-# From apt rather than a GitHub release, unlike the tools above. Z3's release
-# assets embed a glibc version in their filenames, so there is no stable
-# `releases/latest/download/...` URL to derive, and api.github.com is not
-# reachable from these containers to look one up. The tradeoff is age: apt
-# carries 4.8.12 where upstream is well past it. If a proof turns out to need a
-# newer solver, pin a release asset URL here or install `cvc5` instead --
-# `moon prove` accepts either.
-if ! command -v z3 >/dev/null 2>&1; then
-  echo "Installing Z3..."
-  DEBIAN_FRONTEND=noninteractive apt-get update -qq
-  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends z3
-else
-  echo "Z3 already present."
-fi
+# Two are installed, not one, because Why3 is built to run several provers over
+# the same goals -- the toolchain's generated config carries a `[partial_prover]`
+# strategy ("Automatic run of provers") and `running_provers_max = 16`. A goal
+# that one solver cannot discharge often falls to another, so the second is
+# roughly 2s for a materially better chance of closing a proof.
+#
+# Both come from apt rather than a GitHub release, unlike the tools above:
+# Z3's release assets embed a glibc version in their filenames, so there is no
+# stable `releases/latest/download/...` URL to derive, and api.github.com is not
+# reachable from these containers to look one up.
+#
+# apt's versions are not the drag they look like. MoonBit bundles its own Why3
+# (`$MOON_HOME/share/why3`), whose newest Z3 driver is `z3_487.drv` -- written
+# for 4.8.7. apt's 4.8.12 sits just past that; a bleeding-edge Z3 would be
+# further from the shipped driver, not closer to it. cvc5's driver is
+# version-generic, and apt's 1.1.2 is recent.
+#
+# Alt-Ergo is the third solver `moon prove` accepts, and Why3 ships drivers for
+# it. It is deliberately not installed: it is not in apt, so it would mean an
+# opam toolchain and an OCaml build in a hook that currently finishes in under a
+# minute. Add it if the two SMT solvers leave goals unproved.
+for solver in z3 cvc5; do
+  if ! command -v "$solver" >/dev/null 2>&1; then
+    echo "Installing $solver..."
+    DEBIAN_FRONTEND=noninteractive apt-get update -qq
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "$solver"
+  else
+    echo "${solver} already present."
+  fi
+done
 
 echo "Binaries ready."
