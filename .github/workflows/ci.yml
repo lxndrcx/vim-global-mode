@@ -1,0 +1,107 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  plugin:
+    name: Lua plugin
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: stable
+
+      - name: Unit tests
+        run: |
+          nvim -l tests/protocol_spec.lua
+          nvim -l tests/api_spec.lua
+
+      # Drives a real Neovim against a controlled server. Covers the loop-guard
+      # case two-editors.sh structurally cannot reach: a mode pushed directly at
+      # an editor that is in some other non-normal mode. The server here is a
+      # few lines of Node, so this job needs nothing from the server repository.
+      - name: Loop guard
+        run: node tests/loop-guard.js nvim
+
+      # The heartbeat is the protocol's only resync. Without it, several ways an
+      # editor can drift out of step with the server are permanent.
+      - name: Heartbeat resync
+        run: node tests/resync.js nvim
+
+      - uses: JohnnyMorganz/stylua-action@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          version: latest
+          args: --check lua plugin tests
+
+  end-to-end:
+    name: Two editors, one mode
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The real server lives in its own repository now, so this job builds it
+      # from source. That makes the job a genuine cross-repository check: a wire
+      # format changed on one side and not the other fails here and nowhere else.
+      - name: Check out the server
+        uses: actions/checkout@v4
+        with:
+          repository: lxndrcx/vim-global-mode-server-moonbit
+          path: .server
+
+      # Retried: the CDN reset a connection mid-download and failed this job
+      # once already. Every step below reaches the network, and none of them is
+      # this PR's code, so a blip should cost a few seconds rather than a red
+      # build somebody has to interpret.
+      - name: Install MoonBit
+        run: |
+          for attempt in 1 2 3; do
+            if curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash; then
+              echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+              exit 0
+            fi
+            echo "MoonBit install attempt $attempt failed; retrying" >&2
+            sleep $((attempt * 5))
+          done
+          echo "MoonBit install failed after 3 attempts" >&2
+          exit 1
+
+      # A fresh install ships no registry index, so dependency resolution fails
+      # with "module was not found in the registry" until this runs.
+      - name: Fetch the module registry
+        run: |
+          for attempt in 1 2 3; do
+            moon update && exit 0
+            echo "moon update attempt $attempt failed; retrying" >&2
+            sleep $((attempt * 5))
+          done
+          echo "moon update failed after 3 attempts" >&2
+          exit 1
+
+      # Resolves moonbitlang/async over the network on a cold runner.
+      - name: Build the server
+        working-directory: .server
+        run: |
+          for attempt in 1 2 3; do
+            moon build --target native && exit 0
+            echo "server build attempt $attempt failed; retrying" >&2
+            sleep $((attempt * 5))
+          done
+          echo "server build failed after 3 attempts" >&2
+          exit 1
+
+      - uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: stable
+
+      # The real thing: two headless Neovim instances sharing one mode. It finds
+      # the binary under .server/ on its own.
+      - name: Two real editors
+        run: ./tests/two-editors.sh

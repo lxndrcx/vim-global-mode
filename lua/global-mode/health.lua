@@ -1,0 +1,44 @@
+--- `:checkhealth global-mode`
+local config = require("global-mode.config")
+local protocol = require("global-mode.protocol")
+local client = require("global-mode.client")
+
+local M = {}
+
+function M.check()
+  vim.health.start("global-mode")
+
+  if vim.fn.has("nvim-0.10") == 0 then
+    vim.health.error("Neovim 0.10 or newer is required (vim.uv, vim.json)")
+    return
+  end
+  vim.health.ok("Neovim " .. tostring(vim.version()))
+
+  local c = config.current
+  vim.health.info(("server: %s:%d"):format(c.host, c.port))
+  vim.health.info("identifying as: " .. c.user)
+
+  local s = client.state
+  if s.status == "online" then
+    vim.health.ok(("connected as %s"):format(s.id or "?"))
+    vim.health.info(
+      ("global mode: %s (set by %s, seq %d)"):format(protocol.label(s.mode), s.by or "?", s.seq)
+    )
+    local others = client.others()
+    if #others == 0 then
+      vim.health.info("no other editors connected — you are alone with your choices")
+    else
+      local names = {}
+      for _, peer in ipairs(others) do
+        table.insert(names, ("%s@%s"):format(peer.user, peer.host))
+      end
+      vim.health.info(("%d other editor(s): %s"):format(#others, table.concat(names, ", ")))
+    end
+  elseif s.status == "connecting" then
+    vim.health.warn("connecting…")
+  else
+    vim.health.warn("offline", { "start the server, then :GlobalModeConnect" })
+  end
+end
+
+return M
