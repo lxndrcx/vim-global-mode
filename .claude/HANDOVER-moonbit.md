@@ -63,17 +63,25 @@ MoonBit server (`server/`), live WebSocket dashboard.
 - Draft PR: https://github.com/lxndrcx/vim-global-mode/pull/1 (base `main`)
 - CI: green at time of writing
 
-## The task this handover exists for
+## The task this handover exists for — done
 
 **Explore MoonBit's built-in formal verification and assess whether it can be
-applied to the server.** It is task #12 in the originating session, deliberately
+applied to the server.** It was task #12 in the originating session, deliberately
 sequenced last so it starts from code whose invariants have already survived
 adversarial review rather than code that merely compiles.
 
+**It is finished. The answer is in `.claude/VERIFICATION-moonbit.md`.** In short:
+the toolchain works, the opt-in key is `options("proof-enabled": true)` in
+`moon.pkg`, and none of the four properties below is reachable — MoonBit's
+verification language has no strings, and no `old()`, so the wire round trip
+cannot be stated and neither can the `seq` step. One canary lemma is proof-enabled
+in `protocol/` so a future session can tell a working pipeline from a silent one.
+The rest of this file is kept for the MoonBit facts it records, which are still
+accurate and still expensive to rediscover.
+
 ### Step one: find out what actually exists
 
-Do not assume the feature exists or behaves as you remember. The installed
-toolchain is `moon 0.1.20260814` / `moonc v0.10.8`. Check `moon --help`, the
+Do not assume the feature exists or behaves as you remember. Check `moon --help`, the
 official docs, the `moonbitlang/core` source, and — this is why this file exists —
 whatever the MoonBit skills say. A negative result is a perfectly good outcome:
 if verification is absent, immature, or a poor fit for code dominated by async
@@ -106,12 +114,13 @@ version-generic and apt's 1.1.2 is recent. `moon explain
 or mutual recursion. Proof output is expected at
 `_build/verif/<pkg>/<pkg>.proof.json`.
 
-What is **not** yet worked out: how a package opts in. `moon prove protocol`
-answers "Package ... is not proof-enabled; skipping", and the key is not
-`enable_proof`, `proof`, `verify` or `proof_enabled` in `moon.pkg` -- all four
-are rejected as unexpected keys. Find the real one before assuming anything
-about the rest. That the solver runs is settled (`z3` solves a trivial SMT-LIB
-problems correctly); that this server can be proof-enabled is not.
+How a package opts in — the question this section used to leave open — is
+`options("proof-enabled": true)` in its `moon.pkg`. The bare keys `proof_enabled`,
+`proof-enabled`, `proof`, `enable_proof` and `verify` are all rejected; the
+`rr_moon_pkg` format routes it through `options(...)`, like the `native-stub` entry
+in `logging/moon.pkg`. Note that `moon prove` on a package without the key exits 0
+having proved nothing, so check its output for `goals proved` rather than its exit
+status. See `.claude/VERIFICATION-moonbit.md` for the rest.
 
 ### The properties worth proving
 
