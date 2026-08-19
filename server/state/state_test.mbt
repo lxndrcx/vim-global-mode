@@ -149,3 +149,26 @@ test "dashboards receive state on every change" {
   assert_eq(fields.get("label"), Some(Json::string("INSERT")))
   assert_eq(fields.get("by"), Some(Json::string("alex")))
 }
+
+///|
+test "a client that fell behind still ends on the current mode" {
+  // `try_put` does not honour DiscardOldest, so a naive `send` silently becomes
+  // discard-NEWEST: the frame thrown away is the correcting one, and a stalled
+  // client is left displaying a stale mode with nothing to resync it. The last
+  // frame a backlogged client holds must be the mode actually in force.
+  let hub = Hub::new()
+  let alex = hub.join("alex", "thinkpad")
+  let sam = hub.join("sam", "desktop")
+  for i in 0..<500 {
+    hub.set_mode(alex, if i % 2 == 0 { Insert } else { Normal }) |> ignore
+  }
+  assert_eq(hub.mode, Normal)
+  let backlog = drain(sam).filter(f => f.contains("\"t\":\"mode\""))
+  assert_true(backlog.length() > 0)
+  let last = @json.parse(
+    backlog[backlog.length() - 1].trim(chars="\n").to_owned(),
+  )
+  guard last is Object(fields) else { fail("frame did not parse") }
+  assert_eq(fields.get("mode"), Some(Json::string(hub.mode.to_wire())))
+  assert_eq(fields.get("seq"), Some(Json::number(hub.seq.to_double())))
+}

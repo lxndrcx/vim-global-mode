@@ -183,11 +183,22 @@ pub fn Hub::ping_one(self : Hub, client : Client) -> Unit {
 ///|
 /// Enqueue without ever blocking or raising.
 ///
-/// The queue discards its oldest entry when full, so the only failure left is
-/// a closed queue — a client that disconnected while we were mid-broadcast.
-/// That is expected, not exceptional.
+/// `try_put` does NOT honour `DiscardOldest` — it just returns false when the
+/// queue is full (the async `put` is the one that discards, and this is called
+/// from synchronous code). Taking that at face value would silently invert the
+/// policy into discard-*newest*, which is the worst possible choice here: the
+/// frame dropped would be the newest one, so a client that fell behind would be
+/// left displaying a stale mode forever, with no resync to correct it.
+///
+/// So drop the oldest frame explicitly and retry. A closed queue — a client
+/// that disconnected mid-broadcast — is expected, not exceptional.
 fn send(outbox : @aqueue.Queue[String], frame : String) -> Unit {
-  try outbox.try_put(frame) |> ignore catch {
+  try {
+    if !outbox.try_put(frame) {
+      outbox.try_get() |> ignore
+      outbox.try_put(frame) |> ignore
+    }
+  } catch {
     _ => ()
   }
 }

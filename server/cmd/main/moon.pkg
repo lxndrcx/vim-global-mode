@@ -1,4 +1,5 @@
 import {
+  "lxndrcx/global-mode-server/logging",
   "moonbitlang/core/string",
   "moonbitlang/core/env",
   "moonbitlang/async",

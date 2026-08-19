@@ -1,4 +1,9 @@
 ///|
+/// The most editors we will hold at once. A joke plugin does not need more, and
+/// leaving it unbounded turns each cheap client connect into O(n) work here.
+const MAX_EDITORS : Int = 256
+
+///|
 /// How often to ping an idle editor, in milliseconds.
 const PING_INTERVAL_MS : Int = 20_000
 
@@ -17,9 +22,13 @@ pub async fn serve(
   let server = @socket.TcpServer(addr, reuse_addr=true)
   @logging.log("global mode: editors may connect on \{addr}")
   // allow_failure keeps one editor's broken pipe from taking down the server.
+  // max_connections bounds the damage from a flood: each accept costs a roster
+  // broadcast to everyone already connected, so unbounded accepts are both an
+  // fd-exhaustion and a CPU-amplification vector.
   server.run_forever(
     (conn, peer_addr) => handle(hub, conn, peer_addr, verbose~),
     allow_failure=true,
+    max_connections=MAX_EDITORS,
   )
 }
 
@@ -37,15 +46,17 @@ async fn handle(
   verbose~ : Bool,
 ) -> Unit {
   let client = hub.join("anon", "\{peer_addr}")
+  // `run_forever` closes the connection itself once this returns and documents
+  // that the handler must not; so this only has to give the client back.
   defer hub.leave(client)
-  defer conn.close()
   if verbose {
     @logging.log("+ \{client.id} connected from \{peer_addr}")
   }
-  // Tell the newcomer what mode it has just been drafted into, and tell
-  // everyone else that it has arrived.
+  // Tell the newcomer what mode it has just been drafted into. Announcing it to
+  // everyone else waits for its `hello`, which lands within milliseconds and
+  // carries the real name — broadcasting the roster here as well would double
+  // the cost of every connect for a listing that is immediately superseded.
   conn.write(hub.welcome_frame(client))
-  hub.broadcast_roster()
   let missed_pongs = Ref(0)
   @async.with_task_group(group => {
     // Both helpers are `no_wait`: they run until the group body below
@@ -53,7 +64,7 @@ async fn handle(
     // the connection lives exactly as long as the editor keeps talking.
     group.spawn_bg(() => write_loop(client, conn), no_wait=true)
     group.spawn_bg(
-      () => heartbeat(hub, client, conn, missed_pongs),
+      () => heartbeat(hub, client, group, missed_pongs),
       no_wait=true,
     )
     read_loop(hub, client, conn, missed_pongs, verbose~)
@@ -107,20 +118,23 @@ async fn write_loop(client : @state.Client, conn : @socket.Tcp) -> Unit {
 ///|
 /// Ping an idle editor, and hang up on it after enough silence.
 ///
-/// Closing the socket is what ends the connection: it makes the read loop --
-/// the task group's body -- return, which cancels this task and the writer.
-/// TCP would otherwise hold a dead connection open indefinitely.
+/// Ending the task group is what ends the connection. Closing the socket here
+/// instead does NOT work: `IoHandle::close` detaches the fd and nulls it, but
+/// never wakes a coroutine already parked in `wait_read` — which is exactly
+/// where an idle editor's read loop is sitting, and idle editors are the whole
+/// population this function targets. The group body would never return, the
+/// `defer` would never run, and the client would linger in the roster forever.
+/// Returning through the group cancels the parked reader properly.
 async fn heartbeat(
   hub : @state.Hub,
   client : @state.Client,
-  conn : @socket.Tcp,
+  group : @async.TaskGroup[Unit],
   missed_pongs : Ref[Int],
 ) -> Unit {
   for ;; {
     @async.sleep(PING_INTERVAL_MS)
     if missed_pongs.val >= MAX_MISSED_PONGS {
-      conn.close()
-      return
+      group.return_immediately(())
     }
     missed_pongs.val += 1
     hub.ping_one(client)

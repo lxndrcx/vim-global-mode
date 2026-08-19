@@ -88,20 +88,66 @@ async fn main {
   let argv = @env.args()
   let parsed = parse_args(argv[1:]) catch {
     ArgError(message) => {
-      println("global-mode-server: \{message}")
+      die(message)
       return
     }
   }
   guard parsed is Run(options) else { return }
+
+  // Resolve both addresses before starting anything. `Addr::parse` raises, and
+  // letting that escape prints a bare `InvalidAddr` dump for input as ordinary
+  // as `--bind localhost` (not a numeric literal) or `--bind ::1` (which has to
+  // be written `[::1]`). Doing it here keeps every bad command line on the same
+  // plain-sentence path as the other argument errors.
+  let editor_addr = @socket.Addr::parse("\{options.bind}:\{options.port}") catch {
+    _ => {
+      die(bad_address(options.bind))
+      return
+    }
+  }
+  let web_addr = if options.web {
+    Some(
+      @socket.Addr::parse("\{options.bind}:\{options.http_port}") catch {
+        _ => {
+          die(bad_address(options.bind))
+          return
+        }
+      },
+    )
+  } else {
+    None
+  }
   let hub = @state.Hub::new()
-  let editor_addr = @socket.Addr::parse("\{options.bind}:\{options.port}")
+
+  // Binding can still fail — most often because the port is already taken.
+  // Report that as a sentence too, rather than announcing one listener and then
+  // dying with an OSError while the other is already serving.
   @async.with_task_group(group => {
     group.spawn_bg(() => {
       @editors.serve(hub, editor_addr, verbose=options.verbose)
     })
-    if options.web {
-      let web_addr = @socket.Addr::parse("\{options.bind}:\{options.http_port}")
-      group.spawn_bg(() => @web.serve(hub, web_addr, verbose=options.verbose))
+    if web_addr is Some(addr) {
+      group.spawn_bg(() => @web.serve(hub, addr, verbose=options.verbose))
     }
-  })
+  }) catch {
+    error => die("could not start — \{error}")
+  }
+}
+
+///|
+/// libc `exit`. MoonBit's core has no exit primitive, and returning normally
+/// from `main` after an error would report success — leaving a supervisor, a
+/// shell script or CI unable to tell that the server never started.
+extern "C" fn c_exit(code : Int) -> Unit = "exit"
+
+///|
+/// Report a fatal problem in one plain sentence and exit non-zero.
+fn die(message : String) -> Unit {
+  @logging.log("global-mode-server: \{message}")
+  c_exit(1)
+}
+
+///|
+fn bad_address(bind : String) -> String {
+  "'\{bind}' is not an address I can bind to — use a numeric address such as 0.0.0.0, 127.0.0.1 or [::1]"
 }
