@@ -34,6 +34,13 @@ jobs:
       - name: Heartbeat resync
         run: node tests/resync.js nvim
 
+      # Three ways to talk a client out of listening to its own server, all of
+      # which leave it saying "online" while following nobody. Needs a server
+      # that restarts and a second sender, so two-editors.sh cannot reach any
+      # of them.
+      - name: Restart, forgery and stale refresh
+        run: node tests/restart.js nvim
+
       - uses: JohnnyMorganz/stylua-action@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}

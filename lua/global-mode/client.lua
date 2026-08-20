@@ -52,9 +52,18 @@ local LIVENESS_MS = 6000
 --- How often to look at the clock.
 local TICK_MS = 500
 
+--- Always scheduled, never synchronous.
+---
+--- `go_offline` is reached from `tick`, which is a `vim.uv` timer callback --
+--- a fast event context, where `nvim_echo` is forbidden. Notifying from there
+--- raised E5560 and unwound `tick` mid-function, so the `say_hello` that was
+--- meant to follow the disconnect was skipped. Losing the server is the
+--- ordinary case, not an exotic one, so this was firing for everybody.
 local function notify(msg, level)
   if config.current.notify then
-    vim.notify("global-mode: " .. msg, level or vim.log.levels.INFO)
+    vim.schedule(function()
+      vim.notify("global-mode: " .. msg, level or vim.log.levels.INFO)
+    end)
   end
 end
 
@@ -82,8 +91,26 @@ end
 --- frame lost in transit is replaced by the next refresh -- which is why the
 --- old client's resync logic is not here. There is nothing to resync from,
 --- because nothing is ever incremental.
-local function adopt(f)
-  if f.payload < M.state.seq then
+---
+--- `Fresh` marks a frame that starts a new session rather than continuing one.
+--- Only `Welcome` is fresh: it answers a handshake this client just performed,
+--- so its seq is authoritative even when it counts *backwards* -- which is
+--- exactly what a restarted server sends.
+local function adopt(f, fresh)
+  -- Beyond the server's own ceiling (Seq_Type is 0 .. 2**62) and beyond what a
+  -- Lua double holds exactly. Nothing legitimate is up here: at a thousand
+  -- mode changes a second the real server needs ~285,000 years to arrive. A
+  -- frame claiming otherwise is forged, and adopting it would raise the
+  -- high-water mark past anything the real server can ever beat.
+  if f.payload > 2 ^ 53 then
+    return
+  end
+  -- Strictly greater, not "at least as new". A refresh that left the server
+  -- just before this editor's own Set_Mode arrived carries the *previous*
+  -- mode at an equal seq, and adopting it dragged the editor back into the
+  -- mode it had just left. Equal seq from one server means an identical
+  -- frame, so requiring strictly-greater discards only duplicates.
+  if not fresh and f.payload <= M.state.seq then
     return
   end
   M.state.mode = f.mode
@@ -103,6 +130,12 @@ local function go_offline()
   -- after the server died, which is the documented contract's opposite.
   M.state.mode = nil
   M.state.by = nil
+  -- And the counter, which is the one that bites. A server that restarts
+  -- counts from zero again; a client that kept a high-water mark from the
+  -- previous instance rejected every frame the new one sent -- Welcome
+  -- included -- and sat "online" while following nobody, forever. Three
+  -- independent reviews reached this line by three different routes.
+  M.state.seq = 0
   last_sent = nil
   last_heard = nil
   roster_partial = nil
@@ -130,7 +163,7 @@ local function handle_frame(f)
     M.state.status = "online"
     backoff = nil
     M.state.id = f.id
-    adopt(f)
+    adopt(f, true)
     if not was_online then
       local c = config.current
       vim.schedule(function()
@@ -151,13 +184,26 @@ local function handle_frame(f)
     end
     adopt(f)
   elseif f.kind == "ROSTER_ENTRY" then
-    if f.index == 0 then
-      roster_partial = {}
+    -- Keyed by index rather than appended, because counting arrivals trusts
+    -- the network to deliver each entry exactly once. A duplicated datagram
+    -- stood in for a lost one and published a roster with somebody listed
+    -- twice and somebody else missing, presented as complete; an entry that
+    -- overtook index 0 was dropped and the set then never reached its count.
+    if f.index == 0 or (roster_partial and roster_partial.count ~= f.count) then
+      roster_partial = { count = f.count, seen = {} }
     end
-    if roster_partial then
-      table.insert(roster_partial, { id = f.id, user = f.user, host = f.host })
-      if #roster_partial >= f.count then
-        M.state.peers = roster_partial
+    if roster_partial and f.index < f.count then
+      roster_partial.seen[f.index] = { id = f.id, user = f.user, host = f.host }
+      local whole = {}
+      for i = 0, f.count - 1 do
+        if not roster_partial.seen[i] then
+          whole = nil
+          break
+        end
+        whole[i + 1] = roster_partial.seen[i]
+      end
+      if whole then
+        M.state.peers = whole
         roster_partial = nil
         announce()
       end
@@ -274,8 +320,19 @@ function M.connect()
   -- the config would otherwise throw straight out of `setup()`.
   local ok, err = pcall(function()
     sock:bind("0.0.0.0", 0)
-    sock:recv_start(function(recv_err, data)
+    sock:recv_start(function(recv_err, data, addr)
       if handle ~= sock then
+        return
+      end
+      -- Anything not from the server is not the server. The socket is bound
+      -- to a wildcard port that any local process can reach, and one forged
+      -- State frame was enough to drag this editor into a mode nobody chose
+      -- and -- before the bound above -- pin its seq past anything the real
+      -- server could outrun. This does not defeat an on-path attacker, who
+      -- can forge the source too; it stops strays, misdirected traffic and
+      -- any unprivileged process that merely knows the port.
+      local c = config.current
+      if addr and (addr.ip ~= c.host or addr.port ~= c.port) then
         return
       end
       -- `data` is nil on an empty read, which luv uses to mean "nothing right

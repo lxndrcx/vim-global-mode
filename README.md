@@ -130,12 +130,16 @@ nvim -l tests/protocol_spec.lua   # mode normalization
 nvim -l tests/api_spec.lua        # config validation and the statusline API
 node tests/loop-guard.js nvim     # the loop guard, against a controlled server
 node tests/resync.js nvim         # the heartbeat resync
+node tests/restart.js nvim        # server restart, forged frames, stale refreshes
 stylua --check lua plugin tests
 ```
 
-None of those needs the server repository: the loop-guard and resync tests
-bring their own server, a few lines of JavaScript apiece that say exactly what
-each test needs said.
+None of those needs the server repository: the loop-guard, resync and restart
+tests bring their own server, a few lines of JavaScript apiece that say exactly
+what each test needs said. The restart one goes further and *stops* its server
+mid-test, which is the whole point of it -- a client that has been following a
+long-running server must still follow that server after it comes back counting
+from zero.
 
 `tests/two-editors.sh` is the headline, and the one that needs the real thing —
 it starts a server, launches two headless Neovim instances, presses `i` in one
