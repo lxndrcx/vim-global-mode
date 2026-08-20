@@ -62,11 +62,17 @@ const rpc = (args) => {
 };
 const globalMode = () => rpc(["--remote-expr", `luaeval("require('global-mode').mode()")`]);
 const seq = () => rpc(["--remote-expr", `luaeval("require('global-mode.client').state.seq")`]);
+const status = () =>
+  rpc(["--remote-expr", `luaeval("require('global-mode.client').state.status")`]);
 
 // A server that can be restarted: the socket and its state are rebuilt, and
 // `seq` starts from zero again exactly as a fresh process would.
 let server = null;
 let peer = null;
+let refuseHandshake = false;
+let raceMode = null;
+const reports = [];
+const hellos = [];
 let current = { mode: "n", seq: 0 };
 let keepalive = null;
 
@@ -82,8 +88,18 @@ const start = () =>
       if (!f) return;
       peer = rinfo;
       if (f.kind === "HELLO") {
+        hellos.push(Date.now());
+        if (refuseHandshake) return;
         send({ type: frames.T.CHALLENGE, token: 0x0123456789abcdefn });
+      } else if (f.kind === "SET_MODE") {
+        reports.push(f.mode);
+      } else if (f.kind === "GET_ROSTER") {
+        // Used only to get a frame to the client at a known instant: it asks
+        // for a roster and changes its mode in the same breath, so this reply
+        // lands inside the client's 20ms debounce window.
+        if (raceMode) push(raceMode, current.seq + 1);
       } else if (f.kind === "JOIN") {
+        if (refuseHandshake) return;
         send({
           type: frames.T.WELCOME,
           id: 1,
@@ -133,6 +149,35 @@ const push = (mode, s) => {
     check("the editor follows a long-running server", globalMode(), "i");
     check("and holds its counter", seq(), "1000");
 
+    // ---- 0. A remote change inside the debounce window ----
+    //
+    // The client holds a mode report for 20ms to coalesce bursts. If a remote
+    // change lands inside that window the held report is stale -- and it used
+    // to be sent anyway, with a fresh and therefore *higher* counter, so the
+    // server honoured it precisely because it looked newest and dragged
+    // everybody back to the mode this editor had just been told to leave. The
+    // counter that exists to make reports orderable made the wrong one win.
+    //
+    // Racing this from outside would be hopeless, so the client triggers it:
+    // one expression asks for a roster and changes mode, and the reply to the
+    // roster arrives a millisecond later, inside the window.
+    raceMode = "v";
+    const beforeRace = reports.length;
+    rpc([
+      "--remote-expr",
+      "luaeval(\"(function() local c = require('global-mode.client') "
+        + "c.request_roster() c.send_mode('R') return 1 end)()\")",
+    ]);
+    await sleep(1500);
+    raceMode = null;
+
+    check("the remote change wins the race", globalMode(), "v");
+    check(
+      "the superseded local report is never sent",
+      reports.slice(beforeRace).includes("R"),
+      false
+    );
+
     // ---- 1. The restart ----
     await stop();
     // Longer than LIVENESS_MS, so the client gives up and re-handshakes.
@@ -181,6 +226,30 @@ const push = (mode, s) => {
     send({ type: frames.T.STATE, mode: "v", seq: 2, user: "bob" });
     await sleep(800);
     check("an equal-seq stale refresh is ignored", globalMode(), "i");
+
+    // ---- 4. Back online without a handshake ----
+    //
+    // The client resets its report counter when it goes offline, matching the
+    // server forgetting its side -- but the server only forgets on a Join. A
+    // client that came back "online" on the strength of a refresh alone, its
+    // Hello having been lost, would count from 1 again against a seat whose
+    // high-water mark was still high, and every report from then on would be
+    // discarded as stale. It answers pongs, so it is never expired; it never
+    // sends another Hello, so nothing repairs it. Online, healthy and mute.
+    await stop();
+    await sleep(8000);
+    refuseHandshake = true;
+    await start();
+    hellos.length = 0;
+
+    // Bare refreshes and nothing else -- the handshake is refused.
+    for (let i = 0; i < 6; i++) {
+      push("n", 5000 + i);
+      await sleep(400);
+    }
+    check("a refresh alone does not put us back online", status(), "connecting");
+    check("and the handshake keeps being retried", hellos.length > 0, true);
+    refuseHandshake = false;
 
     // ---- The fast-context notify ----
     // Going offline notifies from a timer callback, where nvim_echo is

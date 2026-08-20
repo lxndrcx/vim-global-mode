@@ -157,6 +157,22 @@ local function adopt(f, fresh)
   if not fresh and f.payload <= M.state.seq then
     return
   end
+  -- Drop any report still waiting in the debounce window.
+  --
+  -- Without this the coalescing defeated the very thing it was added for. A
+  -- remote change landing inside those 20 ms updated the mode here, but left
+  -- `pending_mode` holding the local one -- which the timer then sent with a
+  -- *fresh, higher* counter. The server honoured it precisely because it was
+  -- newer, and dragged everybody back to the mode this editor had already
+  -- been told to leave. The counter that exists to make reports orderable
+  -- made the wrong one win.
+  --
+  -- The adopted mode wins instead: `apply` is about to drive this editor
+  -- there, and `last_sent` below stops the resulting ModeChanged being
+  -- reported straight back.
+  clear_mode_timer()
+  pending_mode = nil
+
   M.state.mode = f.mode
   M.state.by = f.user ~= "" and f.user or nil
   M.state.seq = f.payload
@@ -223,6 +239,22 @@ local function handle_frame(f)
     -- is what keeps us online; the server sends one every couple of seconds
     -- whether or not anything changed.
     if M.state.status ~= "online" then
+      -- Only if we have actually been through the handshake this session.
+      --
+      -- `mode_seq` resets in go_offline to match the server forgetting its
+      -- side -- but the server only forgets on a Join. A client that went
+      -- offline on silence, then had its Hello lost while a periodic refresh
+      -- got through, used to come back "online" here with no handshake at
+      -- all: counting from 1 again against a seat whose high-water mark was
+      -- still 8, so every mode report it ever sent afterwards was discarded
+      -- as stale. It answered pongs, so it was never expired; it never sent
+      -- another Hello, so nothing repaired it. Online, healthy, and mute.
+      --
+      -- Staying out of "online" leaves `tick` retrying the handshake on its
+      -- backoff, which is what resynchronises both counters.
+      if M.state.id == nil then
+        return
+      end
       M.state.status = "online"
       backoff = nil
       announce()
@@ -237,6 +269,11 @@ local function handle_frame(f)
     -- stood in for a lost one and published a roster with somebody listed
     -- twice and somebody else missing, presented as complete; an entry that
     -- overtook index 0 was dropped and the set then never reached its count.
+    if f.count == 0 then
+      -- Nothing to assemble. Resetting on it would discard a good roster and
+      -- then produce nothing in its place.
+      return
+    end
     if f.index == 0 or (roster_partial and roster_partial.count ~= f.count) then
       roster_partial = { count = f.count, seen = {} }
     end
@@ -391,7 +428,7 @@ function M.connect()
       -- can forge the source too; it stops strays, misdirected traffic and
       -- any unprivileged process that merely knows the port.
       local c = config.current
-      if addr and (addr.ip ~= c.host or addr.port ~= c.port) then
+      if not addr or addr.ip ~= c.host or addr.port ~= c.port then
         return
       end
       -- `data` is nil on an empty read, which luv uses to mean "nothing right
