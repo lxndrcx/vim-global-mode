@@ -13,6 +13,11 @@ function M.check()
     return
   end
   vim.health.ok("Neovim " .. tostring(vim.version()))
+  -- Resolved at setup rather than here: `vim.version` cannot be called from a
+  -- fast event context, which is where the client would otherwise need it.
+  -- It no longer travels on the wire -- the server never displayed it -- but
+  -- it is still worth seeing locally.
+  vim.health.info("plugin resolved nvim as: " .. tostring(config.nvim_version))
 
   local c = config.current
   vim.health.info(("server: %s:%d"):format(c.host, c.port))
@@ -20,10 +25,19 @@ function M.check()
 
   local s = client.state
   if s.status == "online" then
-    vim.health.ok(("connected as %s"):format(s.id or "?"))
+    vim.health.ok(("connected as %s"):format(tostring(s.id or "?")))
     vim.health.info(
       ("global mode: %s (set by %s, seq %d)"):format(protocol.label(s.mode), s.by or "?", s.seq)
     )
+
+    -- The roster is not pushed. Broadcasting one on every join and leave was
+    -- an O(n) amplifier on the server, so it is sent only when asked for --
+    -- and this is the only thing that ever asks.
+    client.request_roster()
+    vim.wait(500, function()
+      return #s.peers > 0
+    end, 20)
+
     local others = client.others()
     if #others == 0 then
       vim.health.info("no other editors connected — you are alone with your choices")

@@ -16,7 +16,8 @@
 //
 // Usage: node tests/loop-guard.js <path-to-nvim> [port]
 
-const net = require("node:net");
+const dgram = require("node:dgram");
+const frames = require("./frames.js");
 const { spawn, execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -52,42 +53,66 @@ const rpc = (args) => {
 };
 
 const received = [];
-let socket = null;
 
-const server = net.createServer((s) => {
-  socket = s;
-  s.setEncoding("utf8");
-  let buf = "";
-  s.on("error", () => {});
-  s.on("data", (chunk) => {
-    buf += chunk;
-    let i;
-    while ((i = buf.indexOf("\n")) !== -1) {
-      const line = buf.slice(0, i);
-      buf = buf.slice(i + 1);
-      if (!line) continue;
-      let msg;
-      try {
-        msg = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      if (msg.t === "hello") {
-        s.write(JSON.stringify({ t: "welcome", id: "c1", mode: "n", seq: 0, by: "server" }) + "\n");
-      } else if (msg.t === "mode") {
-        received.push(msg.mode);
-      } else if (msg.t === "ping") {
-        s.write(JSON.stringify({ t: "pong" }) + "\n");
-      }
-    }
-  });
+const server = dgram.createSocket("udp4");
+
+// Where the editor is. UDP has no connection, so "connected" here means
+// nothing more than having heard from it.
+let peer = null;
+
+// The state last pushed, re-sent periodically. The real server refreshes every
+// couple of seconds and the client treats silence as death, so a fake server
+// that only speaks when spoken to would be declared dead mid-test.
+let current = { mode: "n", seq: 0 };
+
+const send = (f) => {
+  if (peer) server.send(frames.encode(f), peer.port, peer.address);
+};
+
+server.on("message", (buf, rinfo) => {
+  const f = frames.decode(buf);
+  if (!f) return;
+  peer = rinfo;
+
+  if (f.kind === "HELLO") {
+    // Any token at all: this stands in for the real server, and what is being
+    // tested is that the client echoes back whatever it is handed.
+    send({ type: frames.T.CHALLENGE, token: 0x0123456789abcdefn });
+  } else if (f.kind === "JOIN") {
+    send({
+      type: frames.T.WELCOME,
+      id: 1,
+      mode: current.mode,
+      seq: current.seq,
+      user: "server",
+    });
+  } else if (f.kind === "SET_MODE") {
+    received.push(f.mode);
+  }
 });
 
-const push = (mode, seq) =>
-  socket.write(JSON.stringify({ t: "mode", mode, seq, by: "bob", by_id: "c9" }) + "\n");
+setInterval(() => {
+  if (peer) {
+    send({
+      type: frames.T.STATE,
+      mode: current.mode,
+      seq: current.seq,
+      user: "bob",
+      // Deliberately not asking for a pong. This frame exists only so the
+      // client keeps hearing from us; a pong request here would be counted
+      // against the heartbeats the test actually sends.
+      wantsPong: false,
+    });
+  }
+}, 2000).unref();
+
+const push = (mode, seq) => {
+  current = { mode, seq };
+  send({ type: frames.T.STATE, mode, seq, user: "bob" });
+};
 
 (async () => {
-  await new Promise((r) => server.listen(PORT, "127.0.0.1", r));
+  await new Promise((r) => server.bind(PORT, "127.0.0.1", r));
 
   const nvim = spawn(NVIM, ["--headless", "--listen", sock, "-u", path.join(work, "init.lua"), "-n"], {
     stdio: "ignore",
@@ -105,7 +130,7 @@ const push = (mode, seq) =>
   };
 
   try {
-    check("editor connected", socket !== null, true);
+    check("editor connected", peer !== null, true);
 
     // Put the editor into insert mode by its own hand; this SHOULD be reported.
     rpc(["--remote-send", "i"]);
@@ -147,12 +172,8 @@ const push = (mode, seq) =>
     // Everything else in this file pushes one frame at a time with a sleep
     // between, which is exactly why this needs writing by hand.
     const beforeBatch = received.length;
-    socket.write(
-      JSON.stringify({ t: "mode", mode: "i", seq: 10, by: "bob", by_id: "c9" }) +
-        "\n" +
-        JSON.stringify({ t: "mode", mode: "n", seq: 11, by: "bob", by_id: "c9" }) +
-        "\n"
-    );
+    push("i", 10);
+    push("n", 11);
     await sleep(2000);
     check("a coalesced batch lands on its LAST mode", rpc(["--remote-expr", "mode(1)"]), "n");
     check(
@@ -164,12 +185,8 @@ const push = (mode, seq) =>
 
     // The reverse ordering too: ending on a non-normal mode.
     const beforeBatch2 = received.length;
-    socket.write(
-      JSON.stringify({ t: "mode", mode: "n", seq: 12, by: "bob", by_id: "c9" }) +
-        "\n" +
-        JSON.stringify({ t: "mode", mode: "v", seq: 13, by: "bob", by_id: "c9" }) +
-        "\n"
-    );
+    push("n", 12);
+    push("v", 13);
     await sleep(2000);
     check("a coalesced batch ending in visual lands there", rpc(["--remote-expr", "mode(1)"]), "v");
     check("still nothing echoed", received.slice(beforeBatch2), []);

@@ -32,20 +32,19 @@ Requires Neovim 0.10 or newer. Pure Lua, no dependencies.
       user = vim.env.USER,
     })
 <
-The server is a separate project, written in MoonBit:
+The server is a separate project, written in Ada and verified with SPARK:
 
-    https://github.com/lxndrcx/vim-global-mode-server-moonbit
+    https://github.com/lxndrcx/vim-global-mode-server-ada
 
 Build and run it with: >
 
-    git clone https://github.com/lxndrcx/vim-global-mode-server-moonbit
-    cd vim-global-mode-server-moonbit
-    moon update              # required once: a fresh toolchain has no registry
-    moon build --target native
-    ./_build/native/debug/build/cmd/main/main.exe --verbose
+    git clone https://github.com/lxndrcx/vim-global-mode-server-ada
+    cd vim-global-mode-server-ada
+    gprbuild -P global_mode.gpr
+    ./bin/global_mode --verbose
 <
-Nothing in this plugin needs the MoonBit toolchain; it speaks to whatever
-server is listening on the configured port.
+Nothing in this plugin needs an Ada toolchain; it speaks to whatever server is
+listening on the configured port. Transport is UDP, in fixed 84-byte frames.
 
 ==============================================================================
 3. CONFIGURATION                                        *global-mode-config*
@@ -57,8 +56,7 @@ host                    string (default "127.0.0.1")
                         "localhost" fails to connect and retries forever.
 
 port                    number (default 7777)
-                        Server port for editors. Note this is not the
-                        dashboard port.
+                        UDP port the server listens on for editors.
 
 user                    string (default $USER, then $USERNAME, then "anon")
                         The name shown to everyone else when you change the

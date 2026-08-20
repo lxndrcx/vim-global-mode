@@ -46,62 +46,36 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The real server lives in its own repository now, so this job builds it
-      # from source. That makes the job a genuine cross-repository check: a wire
-      # format changed on one side and not the other fails here and nowhere else.
+      # The server lives in its own repository, so this job builds it from
+      # source. That makes it a genuine cross-repository check: a wire format
+      # changed on one side and not the other fails here and nowhere else.
       - name: Check out the server
         uses: actions/checkout@v4
         with:
-          repository: lxndrcx/vim-global-mode-server-moonbit
+          repository: lxndrcx/vim-global-mode-server-ada
           path: .server
 
-      # Retried: the CDN reset a connection mid-download and failed this job
-      # once already. Every step below reaches the network, and none of them is
-      # this PR's code, so a blip should cost a few seconds rather than a red
-      # build somebody has to interpret.
-      - name: Install MoonBit
+      # apt's GNAT matches the runner's gcc and needs no index or network
+      # beyond the package mirrors, so there is nothing here to retry.
+      - name: Install GNAT
         run: |
-          for attempt in 1 2 3; do
-            if curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash; then
-              echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
-              exit 0
-            fi
-            echo "MoonBit install attempt $attempt failed; retrying" >&2
-            sleep $((attempt * 5))
-          done
-          echo "MoonBit install failed after 3 attempts" >&2
-          exit 1
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends gnat gprbuild
 
-      # A fresh install ships no registry index, so dependency resolution fails
-      # with "module was not found in the registry" until this runs.
-      - name: Fetch the module registry
-        run: |
-          for attempt in 1 2 3; do
-            moon update && exit 0
-            echo "moon update attempt $attempt failed; retrying" >&2
-            sleep $((attempt * 5))
-          done
-          echo "moon update failed after 3 attempts" >&2
-          exit 1
-
-      # Resolves moonbitlang/async over the network on a cold runner.
+      # Release, and not merely for speed. A debug build executes the hub's
+      # quantified invariants on every iteration of the server loop and is far
+      # too slow to complete a second editor's handshake -- it fails in a way
+      # that looks exactly like a protocol bug.
       - name: Build the server
         working-directory: .server
-        run: |
-          for attempt in 1 2 3; do
-            moon build --target native && exit 0
-            echo "server build attempt $attempt failed; retrying" >&2
-            sleep $((attempt * 5))
-          done
-          echo "server build failed after 3 attempts" >&2
-          exit 1
+        run: gprbuild -P global_mode.gpr -XGLOBAL_MODE_BUILD=release
 
       - uses: rhysd/action-setup-vim@v1
         with:
           neovim: true
           version: stable
 
-      # The real thing: two headless Neovim instances sharing one mode. It finds
-      # the binary under .server/ on its own.
+      # The real thing: two headless Neovim instances sharing one mode. It
+      # finds the binary under .server/ on its own.
       - name: Two real editors
         run: ./tests/two-editors.sh

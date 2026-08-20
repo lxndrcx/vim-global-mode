@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Fetch and build the server this plugin talks to, and print the binary's path.
 #
-# The server lives in its own repository -- lxndrcx/vim-global-mode-server-moonbit
-# -- so nothing here needs the MoonBit toolchain until you want to run
+# The server lives in its own repository -- lxndrcx/vim-global-mode-server-ada
+# -- so nothing here needs an Ada toolchain until you want to run
 # `tests/two-editors.sh`, which needs a real server. This script is the bridge:
-# it clones (or updates) that repository under `.server/`, installs MoonBit if
-# it is missing, builds, and prints the binary path on stdout.
+# it clones (or updates) that repository under `.server/`, installs GNAT if it
+# is missing, builds, and prints the binary path on stdout.
 #
 #   ./scripts/build-server.sh                    # clone/update, build, print path
 #   ./scripts/build-server.sh --ref some-branch  # build a particular ref
@@ -15,7 +15,7 @@
 # above yields the path alone.
 set -euo pipefail
 
-REPO="${GLOBAL_MODE_SERVER_REPO:-https://github.com/lxndrcx/vim-global-mode-server-moonbit}"
+REPO="${GLOBAL_MODE_SERVER_REPO:-https://github.com/lxndrcx/vim-global-mode-server-ada}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CHECKOUT="$HERE/.server"
 REF=""
@@ -51,22 +51,25 @@ else
   git -C "$CHECKOUT" merge --quiet --ff-only '@{u}'
 fi
 
-export PATH="$HOME/.moon/bin:$PATH"
-if ! moon version >/dev/null 2>&1; then
-  say "Installing the MoonBit toolchain ..."
-  curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash >&2
+if ! command -v gprbuild >/dev/null 2>&1; then
+  say "Installing GNAT and gprbuild ..."
+  if [ "$(id -u)" -eq 0 ]; then
+    DEBIAN_FRONTEND=noninteractive apt-get update -qq >&2
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+      --no-install-recommends gnat gprbuild >&2
+  else
+    say "gprbuild is missing and this is not root; install gnat and gprbuild."
+    exit 1
+  fi
 fi
 
-# A fresh install ships no registry index, so resolving moonbitlang/async fails
-# with "module was not found in the registry" until this runs.
-if [ ! -d "$HOME/.moon/registry/index" ]; then
-  say "Fetching the MoonBit module registry ..."
-  moon update >&2
-fi
-
+# Release, and not merely for speed. A debug build executes the hub's
+# quantified invariants on every iteration of the server loop -- about 10^9
+# operations -- and is far too slow to complete a second editor's handshake.
+# Release is the project's default, so this is belt and braces.
 say "Building the server ..."
-(cd "$CHECKOUT" && moon build --target native >&2)
+(cd "$CHECKOUT" && gprbuild -P global_mode.gpr -XGLOBAL_MODE_BUILD=release >&2)
 
-BIN="$CHECKOUT/_build/native/debug/build/cmd/main/main.exe"
+BIN="$CHECKOUT/bin/global_mode"
 [ -x "$BIN" ] || { say "build produced no binary at $BIN"; exit 1; }
 echo "$BIN"

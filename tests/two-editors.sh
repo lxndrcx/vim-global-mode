@@ -5,8 +5,12 @@
 # the only way genuine mode transitions happen. Starts its own server on its
 # own port so the result never depends on ambient state.
 #
+# Transport-agnostic on purpose: it drives real editors against a real server
+# and never inspects the wire, which is what makes it an honest check that a
+# new language, protocol and transport preserved the old behaviour.
+#
 # The server is a separate repository, so this test needs a binary built from
-# lxndrcx/vim-global-mode-server-moonbit. `scripts/build-server.sh` produces one
+# lxndrcx/vim-global-mode-server-ada. `scripts/build-server.sh` produces one
 # and prints its path; anything already built works too.
 #
 # Usage: tests/two-editors.sh [path-to-server-binary]
@@ -26,13 +30,12 @@ if [ -n "$SERVER_BIN" ]; then
   fi
 else
   # Otherwise search: the checkout scripts/build-server.sh manages, then a
-  # sibling clone. Release before debug in each, a release build being the
-  # deliberate one.
+  # sibling clone. Only release paths -- a debug build of the server is far too
+  # slow to serve two editors and would fail here in a way that looks like a
+  # protocol bug.
   for candidate in \
-    "$HERE/.server/_build/native/release/build/cmd/main/main.exe" \
-    "$HERE/.server/_build/native/debug/build/cmd/main/main.exe" \
-    "$HERE/../vim-global-mode-server-moonbit/_build/native/release/build/cmd/main/main.exe" \
-    "$HERE/../vim-global-mode-server-moonbit/_build/native/debug/build/cmd/main/main.exe"
+    "$HERE/.server/bin/global_mode" \
+    "$HERE/../vim-global-mode-server-ada/bin/global_mode"
   do
     [ -x "$candidate" ] && { SERVER_BIN="$candidate"; break; }
   done
@@ -46,7 +49,6 @@ echo "server: $SERVER_BIN"
 
 WORK="$(mktemp -d)"
 PORT=$(( (RANDOM % 10000) + 20000 ))
-HTTP_PORT=$((PORT + 1))
 command -v nvim >/dev/null || { echo "nvim not on PATH"; exit 1; }
 
 fails=0
@@ -78,7 +80,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-"$SERVER_BIN" --bind 127.0.0.1 --port "$PORT" --http-port "$HTTP_PORT" \
+"$SERVER_BIN" --bind 127.0.0.1 --port "$PORT" \
   >"$WORK/server.log" 2>&1 &
 echo $! > "$WORK/server.pid"
 sleep 1
