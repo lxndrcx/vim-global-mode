@@ -80,6 +80,13 @@ Or use the pieces directly — `require("global-mode").statusline()` returns
 A `ModeChanged` autocmd reports your mode; the server records it as *the* mode
 and pushes it to every other editor, which applies it with `nvim_feedkeys`.
 
+Reports are held for 20 ms and coalesced, so a burst of changes puts one
+datagram on the wire carrying the mode you ended on rather than one per mode you
+passed through. Each report also carries a counter, which is the only ordering
+information in the protocol: UDP can deliver two reports sent a millisecond
+apart the wrong way round, and without the counter the server would apply them
+in arrival order and leave everyone in the mode you just left.
+
 Two details do most of the work:
 
 **The server never echoes a change back to whoever caused it,** and the client

@@ -54,6 +54,10 @@ const rpc = (args) => {
 
 const received = [];
 
+// The same reports, with their counters. Kept separate so the mode-only
+// assertions above stay readable.
+const reports = [];
+
 const server = dgram.createSocket("udp4");
 
 // Where the editor is. UDP has no connection, so "connected" here means
@@ -88,6 +92,7 @@ server.on("message", (buf, rinfo) => {
     });
   } else if (f.kind === "SET_MODE") {
     received.push(f.mode);
+    reports.push({ mode: f.mode, seq: Number(f.payload) });
   }
 });
 
@@ -190,6 +195,29 @@ const push = (mode, seq) => {
     await sleep(2000);
     check("a coalesced batch ending in visual lands there", rpc(["--remote-expr", "mode(1)"]), "v");
     check("still nothing echoed", received.slice(beforeBatch2), []);
+    // A burst of mode changes is one report, not one per mode passed through.
+    //
+    // Every entry in the key table starts with CTRL-\ CTRL-N, so this walks
+    // normal on the way to visual and fires two ModeChanged events a
+    // millisecond apart. Sending both would put two datagrams back to back on
+    // the wire, and those are the two most likely to be reordered -- which is
+    // the whole reason for coalescing them.
+    const beforeBurst = reports.length;
+    rpc(["--remote-send", "<C-\\><C-n>v"]);
+    await sleep(800);
+    const burst = reports.slice(beforeBurst);
+    check("a burst of changes is reported once", burst.length, 1);
+    check("and reports the mode it ended on", burst[0] && burst[0].mode, "v");
+
+    // Every report carries a strictly greater counter than the last, which is
+    // what lets the server discard one that overtook a newer one in flight.
+    const seqs = reports.map((r) => r.seq);
+    check(
+      "report counters strictly increase",
+      seqs.every((s, i) => i === 0 || s > seqs[i - 1]),
+      true
+    );
+    check("and start above zero", seqs[0] > 0, true);
   } finally {
     console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);
     cleanup();

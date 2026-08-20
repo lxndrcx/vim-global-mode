@@ -165,6 +165,13 @@ Three things stop one keypress becoming an infinite storm:
   3. Re-reporting the mode already in force is a no-op on the server, and does
      not advance the sequence counter.
 
+Reports are also coalesced: a change is held for 20 milliseconds, so a burst
+becomes one datagram carrying the mode you ended on. Each report carries a
+counter, and the server ignores any report that is not newer than the last it
+honoured from that editor — without it, two reports sent a millisecond apart
+and reordered in flight would leave everybody in the mode you had just left.
+The counter restarts on every handshake, on both sides at once.
+
                                                        *global-mode-resync*
 Separately, the server's heartbeat carries the authoritative mode every five
 seconds, and a client that has drifted adopts it. This is the only resync the

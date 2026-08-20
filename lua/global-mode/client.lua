@@ -84,6 +84,50 @@ local function send(frame)
   end
 end
 
+--- How long to sit on a mode change before reporting it.
+---
+--- Mode changes arrive in bursts: every entry in the key table begins with
+--- CTRL-\ CTRL-N, so walking into visual fires normal and then visual a
+--- millisecond apart. Sending both puts two datagrams on the wire back to
+--- back, which are also the two most likely to be reordered in flight -- and a
+--- reordered pair leaves everybody in the mode the user just left.
+---
+--- Coalescing them is the same trick the server uses on its fan-out, in the
+--- other direction: report the mode you ended up in, not every mode you passed
+--- through. The counter below then makes the surviving reports orderable, so
+--- the two changes cover the problem from both ends.
+local DEBOUNCE_MS = 20
+
+--- Our own report counter, which is what lets the server order them.
+---
+--- Reset on going offline, because the server forgets its side on every
+--- handshake. If only one end reset, every report would be discarded as stale
+--- from then on -- silently, with the client online and apparently well.
+local mode_seq = 0
+local mode_timer = nil
+local pending_mode = nil
+
+local function clear_mode_timer()
+  if mode_timer then
+    mode_timer:stop()
+    mode_timer:close()
+    mode_timer = nil
+  end
+end
+
+--- Send whatever mode we ended up in. Runs in a timer callback, so it must
+--- stay in fast-context-safe territory: no vim.notify, no autocmds.
+local function flush_mode()
+  clear_mode_timer()
+  local mode = pending_mode
+  pending_mode = nil
+  if mode == nil or M.state.status ~= "online" then
+    return
+  end
+  mode_seq = mode_seq + 1
+  send({ type = protocol.T.SET_MODE, mode = mode, seq = mode_seq })
+end
+
 --- Adopt the server's account of the world.
 ---
 --- Frames carry full state and the rule is one line: take anything at least as
@@ -128,6 +172,10 @@ local function go_offline()
   M.state.id = nil
   -- Forget the mode too. Keeping it meant `mode()` reported a global mode long
   -- after the server died, which is the documented contract's opposite.
+  clear_mode_timer()
+  pending_mode = nil
+  -- Matching Forget_Seen on the server, which resets on every handshake.
+  mode_seq = 0
   M.state.mode = nil
   M.state.by = nil
   -- And the counter, which is the one that bites. A server that restarts
@@ -234,10 +282,20 @@ function M.send_mode(mode)
 
   -- Update our own view optimistically. The server deliberately does not echo
   -- a change back to whoever caused it, so this is the only chance we get.
+  -- This stays inline: only the datagram waits, never the statusline.
   M.state.mode = mode
   M.state.by = config.current.user
 
-  send({ type = protocol.T.SET_MODE, mode = mode })
+  -- Arm on the first change of a burst and leave it armed, rather than
+  -- restarting the window on each one. A restarting window would never fire
+  -- under a continuous stream; this way the report is always sent within
+  -- DEBOUNCE_MS of the change that began the burst, carrying whichever mode
+  -- the burst ended on.
+  pending_mode = mode
+  if not mode_timer then
+    mode_timer = vim.uv.new_timer()
+    mode_timer:start(DEBOUNCE_MS, 0, flush_mode)
+  end
   announce()
 end
 
@@ -289,6 +347,7 @@ local function tick()
 end
 
 local function close_socket()
+  clear_mode_timer()
   if handle and not handle:is_closing() then
     handle:close()
   end
