@@ -37,27 +37,24 @@ Requires Neovim 0.10 or newer.
 ## Run a server
 
 The server is a separate project:
-[lxndrcx/vim-global-mode-server-moonbit](https://github.com/lxndrcx/vim-global-mode-server-moonbit).
-It is written in MoonBit and builds to a single native binary — nothing here
-depends on the toolchain unless you want to run it yourself:
+[lxndrcx/vim-global-mode-server-ada](https://github.com/lxndrcx/vim-global-mode-server-ada).
+It is Ada/SPARK, speaks UDP, and holds one file descriptor no matter how many
+editors connect:
 
 ```sh
-git clone https://github.com/lxndrcx/vim-global-mode-server-moonbit
-cd vim-global-mode-server-moonbit
-moon update && moon build --target native
-./_build/native/debug/build/cmd/main/main.exe --verbose
+git clone https://github.com/lxndrcx/vim-global-mode-server-ada
+cd vim-global-mode-server-ada
+gprbuild -P global_mode.gpr
+./bin/global_mode --verbose
 ```
 
 ```
-global mode: editors may connect on 0.0.0.0:7777
-global mode: dashboard on http://0.0.0.0:7778
+global mode: editors may connect on 0.0.0.0: 7777
+global mode: one socket, up to 1024 editors
 ```
 
-Its flags, limits and dashboard are documented there. The two ports are the only
-things this side needs to know: editors connect to `7777` over raw TCP, and
-`http://localhost:7778` shows the current global mode in large letters, who is
-responsible for it, and everyone currently subject to it — live, over a
-WebSocket.
+Its flags and limits are documented there. This side needs to know only the
+port: editors send 84-byte datagrams to `7777`.
 
 ## Statusline
 
@@ -83,6 +80,13 @@ Or use the pieces directly — `require("global-mode").statusline()` returns
 A `ModeChanged` autocmd reports your mode; the server records it as *the* mode
 and pushes it to every other editor, which applies it with `nvim_feedkeys`.
 
+Reports are held for 20 ms and coalesced, so a burst of changes puts one
+datagram on the wire carrying the mode you ended on rather than one per mode you
+passed through. Each report also carries a counter, which is the only ordering
+information in the protocol: UDP can deliver two reports sent a millisecond
+apart the wrong way round, and without the counter the server would apply them
+in arrival order and leave everyone in the mode you just left.
+
 Two details do most of the work:
 
 **The server never echoes a change back to whoever caused it,** and the client
@@ -99,13 +103,20 @@ the client tracks a queue of modes it is expecting, treats a transit through
 normal as its own, and expires an entry after half a second in case the keys
 never take effect at all.
 
-**The heartbeat carries the global mode, and that is the only resync there is.**
-Every five seconds the server states the authoritative mode; a client already in
-it does nothing, and one that has drifted is pulled back. Without it, several
-ways of falling out of step — a frame dropped from a full outbox, two editors
-changing mode in the same instant, an apply refused by the rate limiter — leave
-an editor permanently disagreeing with everyone else, because the protocol
-otherwise only ever announces *changes*.
+**Every frame carries the whole state, so nobody can drift.** The server never
+sends "the mode changed"; it sends "the mode is X, set by Y, and this is change
+number N", and a client adopts anything at least as new as what it has. Order
+does not matter, duplicates are no-ops, and a datagram lost in flight is
+replaced by the next refresh a couple of seconds later. There is no resync path
+because nothing is ever incremental — an earlier version of this protocol
+announced only changes, and every way of missing one was permanent.
+
+**Joining takes a round trip, because UDP source addresses are forgeable.** The
+server answers `hello` with a token computed from the address the hello came
+from, and admits you only when you echo it back. Without that, anyone could
+claim to be somebody else's address and have the server aim traffic at them.
+The token is computed rather than stored, so there is no handshake table for a
+flood to exhaust.
 
 **Operator-pending mode is dropped before it reaches anything.** A `ModeChanged`
 autocmd that schedules work could once loop between normal and operator-pending
@@ -113,8 +124,11 @@ until it pegged a core ([neovim#22263](https://github.com/neovim/neovim/issues/2
 So `d` and `y` leave everyone else alone — you can still operate on text, you
 just cannot inflict the half-finished operator on anybody.
 
-Transport is newline-delimited JSON over raw TCP, because `vim.uv` gives that
-for free. The dashboard gets a real WebSocket, because a browser wants one.
+Transport is fixed 84-byte frames over UDP. One datagram is one frame, so the
+plugin does no framing at all: there is no length prefix to read, no delimiter
+to scan for and no half-a-message to hold onto. `vim.uv` provides the socket,
+and the frames are packed by hand because Neovim's LuaJIT has no
+`string.pack`.
 
 ## Tests
 
@@ -123,18 +137,22 @@ nvim -l tests/protocol_spec.lua   # mode normalization
 nvim -l tests/api_spec.lua        # config validation and the statusline API
 node tests/loop-guard.js nvim     # the loop guard, against a controlled server
 node tests/resync.js nvim         # the heartbeat resync
+node tests/restart.js nvim        # server restart, forged frames, stale refreshes
 stylua --check lua plugin tests
 ```
 
-None of those needs the server repository: the loop-guard and resync tests
-bring their own server, a few lines of JavaScript apiece that say exactly what
-each test needs said.
+None of those needs the server repository: the loop-guard, resync and restart
+tests bring their own server, a few lines of JavaScript apiece that say exactly
+what each test needs said. The restart one goes further and *stops* its server
+mid-test, which is the whole point of it -- a client that has been following a
+long-running server must still follow that server after it comes back counting
+from zero.
 
 `tests/two-editors.sh` is the headline, and the one that needs the real thing —
 it starts a server, launches two headless Neovim instances, presses `i` in one
 and asserts the other ends up in insert mode. `scripts/build-server.sh` clones
-and builds the server repository for it (installing MoonBit if you have not
-got it) and prints the binary's path:
+and builds the server repository for it (installing GNAT if you have not got
+it) and prints the binary's path:
 
 ```sh
 ./scripts/build-server.sh   # into .server/, which is gitignored

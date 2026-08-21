@@ -5,8 +5,12 @@
 # the only way genuine mode transitions happen. Starts its own server on its
 # own port so the result never depends on ambient state.
 #
+# Transport-agnostic on purpose: it drives real editors against a real server
+# and never inspects the wire, which is what makes it an honest check that a
+# new language, protocol and transport preserved the old behaviour.
+#
 # The server is a separate repository, so this test needs a binary built from
-# lxndrcx/vim-global-mode-server-moonbit. `scripts/build-server.sh` produces one
+# lxndrcx/vim-global-mode-server-ada. `scripts/build-server.sh` produces one
 # and prints its path; anything already built works too.
 #
 # Usage: tests/two-editors.sh [path-to-server-binary]
@@ -26,13 +30,12 @@ if [ -n "$SERVER_BIN" ]; then
   fi
 else
   # Otherwise search: the checkout scripts/build-server.sh manages, then a
-  # sibling clone. Release before debug in each, a release build being the
-  # deliberate one.
+  # sibling clone. Only release paths -- a debug build of the server is far too
+  # slow to serve two editors and would fail here in a way that looks like a
+  # protocol bug.
   for candidate in \
-    "$HERE/.server/_build/native/release/build/cmd/main/main.exe" \
-    "$HERE/.server/_build/native/debug/build/cmd/main/main.exe" \
-    "$HERE/../vim-global-mode-server-moonbit/_build/native/release/build/cmd/main/main.exe" \
-    "$HERE/../vim-global-mode-server-moonbit/_build/native/debug/build/cmd/main/main.exe"
+    "$HERE/.server/bin/global_mode" \
+    "$HERE/../vim-global-mode-server-ada/bin/global_mode"
   do
     [ -x "$candidate" ] && { SERVER_BIN="$candidate"; break; }
   done
@@ -46,7 +49,6 @@ echo "server: $SERVER_BIN"
 
 WORK="$(mktemp -d)"
 PORT=$(( (RANDOM % 10000) + 20000 ))
-HTTP_PORT=$((PORT + 1))
 command -v nvim >/dev/null || { echo "nvim not on PATH"; exit 1; }
 
 fails=0
@@ -78,7 +80,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-"$SERVER_BIN" --bind 127.0.0.1 --port "$PORT" --http-port "$HTTP_PORT" \
+"$SERVER_BIN" --bind 127.0.0.1 --port "$PORT" \
   >"$WORK/server.log" 2>&1 &
 echo $! > "$WORK/server.pid"
 sleep 1
@@ -167,10 +169,16 @@ check "seq advanced once leaving visual" "$(seq_of sam)" "$((base_seq + 4))"
 
 # A cross-mode transition between two real editors. This is a worthwhile
 # end-to-end check, but be clear about what it does NOT cover: it cannot reach
-# the loop guard's transit rule. A real editor walking i->v emits `n` then `v`,
-# so the recipient is stepped through normal and the transit never fires --
-# deleting the transit rule leaves all of these checks green. Only
-# tests/loop-guard.js, which pushes a mode directly, protects that.
+# the loop guard's transit rule. Deleting that rule leaves every check in this
+# file green -- verified, not assumed. Only tests/loop-guard.js, which pushes a
+# mode directly with gaps between, fails when it goes.
+#
+# The reason has changed even though the conclusion has not. It used to be that
+# a real editor walking i->v emitted `n` then `v`, so the recipient was stepped
+# through normal and the transit never fired. Now the client coalesces that
+# burst and reports only `v`, so the recipient *is* pushed straight from insert
+# into visual and the transit does fire -- but the same coalescing then swallows
+# the spurious `n` it would have echoed, so nothing here notices either way.
 send_to alex 'i'
 sleep 1
 check "both are in insert before the cross-mode test" "$(mode_of alex)$(mode_of sam)" "ii"
@@ -179,9 +187,11 @@ send_to alex '<C-\><C-n>v'
 sleep 1.5
 check "alex reached visual" "$(mode_of alex)" "v"
 check "sam was dragged from insert to visual" "$(mode_of sam)" "v"
-# alex made exactly two genuine changes (i->n, n->v). Anything beyond that is
-# the recipient echoing changes that were forced on it.
-check "no echo storm: seq advanced by exactly two" "$(seq_of sam)" "$((cross_seq + 2))"
+# alex made two genuine changes (i->n, n->v) a keystroke apart, and the client
+# coalesces them into the one it ended on, so the server sees a single report.
+# The exact number is the point either way: anything beyond it is the recipient
+# echoing changes that were forced on it, which is the failure this guards.
+check "no echo storm: seq advanced by exactly one" "$(seq_of sam)" "$((cross_seq + 1))"
 send_to alex '<C-\><C-n>'
 sleep 1
 

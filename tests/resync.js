@@ -14,7 +14,8 @@
 //
 // Usage: node tests/resync.js <path-to-nvim> [port]
 
-const net = require("node:net");
+const dgram = require("node:dgram");
+const frames = require("./frames.js");
 const { spawn, execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -51,47 +52,70 @@ const rpc = (args) => {
 
 const received = [];
 let pongs = 0;
-let socket = null;
 
-const server = net.createServer((s) => {
-  socket = s;
-  s.setEncoding("utf8");
-  let buf = "";
-  s.on("error", () => {});
-  s.on("data", (chunk) => {
-    buf += chunk;
-    let i;
-    while ((i = buf.indexOf("\n")) !== -1) {
-      const line = buf.slice(0, i);
-      buf = buf.slice(i + 1);
-      if (!line) continue;
-      let msg;
-      try {
-        msg = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      if (msg.t === "hello") {
-        s.write(JSON.stringify({ t: "welcome", id: "c1", mode: "n", seq: 0, by: "server" }) + "\n");
-      } else if (msg.t === "mode") {
-        // Deliberately NOT acted on: this models the change being lost, which
-        // is exactly the situation resync has to recover from.
-        received.push(msg.mode);
-      } else if (msg.t === "pong") {
-        pongs++;
-      }
-    }
-  });
+const server = dgram.createSocket("udp4");
+
+// Where the editor is. UDP has no connection, so "connected" here means
+// nothing more than having heard from it.
+let peer = null;
+
+// The state last pushed, re-sent periodically. The real server refreshes every
+// couple of seconds and the client treats silence as death, so a fake server
+// that only speaks when spoken to would be declared dead mid-test.
+let current = { mode: "n", seq: 0 };
+
+const send = (f) => {
+  if (peer) server.send(frames.encode(f), peer.port, peer.address);
+};
+
+server.on("message", (buf, rinfo) => {
+  const f = frames.decode(buf);
+  if (!f) return;
+  peer = rinfo;
+
+  if (f.kind === "HELLO") {
+    // Any token at all: this stands in for the real server, and what is being
+    // tested is that the client echoes back whatever it is handed.
+    send({ type: frames.T.CHALLENGE, token: 0x0123456789abcdefn });
+  } else if (f.kind === "JOIN") {
+    send({
+      type: frames.T.WELCOME,
+      id: 1,
+      mode: current.mode,
+      seq: current.seq,
+      user: "server",
+    });
+  } else if (f.kind === "SET_MODE") {
+    received.push(f.mode);
+  } else if (f.kind === "PONG") {
+    pongs++;
+  }
 });
+
+setInterval(() => {
+  if (peer) {
+    send({
+      type: frames.T.STATE,
+      mode: current.mode,
+      seq: current.seq,
+      user: "bob",
+      // Deliberately not asking for a pong. This frame exists only so the
+      // client keeps hearing from us; a pong request here would be counted
+      // against the heartbeats the test actually sends.
+      wantsPong: false,
+    });
+  }
+}, 2000).unref();
 
 let pingsSent = 0;
 const ping = (mode, seq) => {
   pingsSent++;
-  socket.write(JSON.stringify({ t: "ping", mode, seq, by: "bob" }) + "\n");
+  current = { mode, seq };
+  send({ type: frames.T.STATE, mode, seq, user: "bob", wantsPong: true });
 };
 
 (async () => {
-  await new Promise((r) => server.listen(PORT, "127.0.0.1", r));
+  await new Promise((r) => server.bind(PORT, "127.0.0.1", r));
 
   const nvim = spawn(NVIM, ["--headless", "--listen", sock, "-u", path.join(work, "init.lua"), "-n"], {
     stdio: "ignore",
@@ -101,7 +125,7 @@ const ping = (mode, seq) => {
   await sleep(1200);
 
   try {
-    check("editor connected", socket !== null, true);
+    check("editor connected", peer !== null, true);
 
     // Drive the editor into insert. The server drops the change on the floor,
     // so the two now disagree: editor INSERT, server still says NORMAL.
