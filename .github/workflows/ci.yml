@@ -17,6 +17,13 @@ jobs:
           neovim: true
           version: stable
 
+      # The fake servers are the independent side of the wire format, so they
+      # are type-checked as strictly as the plugin is linted.
+      - name: Type-check the fake servers
+        run: |
+          pip install --quiet pyrefly
+          pyrefly check
+
       - name: Unit tests
         run: |
           nvim -l tests/protocol_spec.lua
@@ -27,19 +34,19 @@ jobs:
       # an editor that is in some other non-normal mode. The server here is a
       # few lines of Node, so this job needs nothing from the server repository.
       - name: Loop guard
-        run: node tests/loop-guard.js nvim
+        run: python3 tests/loop_guard.py nvim
 
       # The heartbeat is the protocol's only resync. Without it, several ways an
       # editor can drift out of step with the server are permanent.
       - name: Heartbeat resync
-        run: node tests/resync.js nvim
+        run: python3 tests/resync.py nvim
 
       # Three ways to talk a client out of listening to its own server, all of
       # which leave it saying "online" while following nobody. Needs a server
       # that restarts and a second sender, so two-editors.sh cannot reach any
       # of them.
       - name: Restart, forgery and stale refresh
-        run: node tests/restart.js nvim
+        run: python3 tests/restart.py nvim
 
       - uses: JohnnyMorganz/stylua-action@v4
         with:
