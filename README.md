@@ -135,9 +135,9 @@ and the frames are packed by hand because Neovim's LuaJIT has no
 ```sh
 nvim -l tests/protocol_spec.lua   # mode normalization
 nvim -l tests/api_spec.lua        # config validation and the statusline API
-node tests/loop-guard.js nvim     # the loop guard, against a controlled server
-node tests/resync.js nvim         # the heartbeat resync
-node tests/restart.js nvim        # server restart, forged frames, stale refreshes
+python3 tests/loop_guard.py nvim  # the loop guard, against a controlled server
+python3 tests/resync.py nvim      # the heartbeat resync
+python3 tests/restart.py nvim     # server restart, forged frames, stale refreshes
 stylua --check lua plugin tests
 ```
 
@@ -168,15 +168,16 @@ GLOBAL_MODE_SERVER=/path/to/main.exe ./tests/two-editors.sh
 
 But it is not sufficient on its own, and says so in its own comments: a real
 editor walking `i`→`v` steps its peers through normal, so the loop guard's
-transit rule is unreachable from it. `tests/loop-guard.js` pushes modes
+transit rule is unreachable from it. `tests/loop_guard.py` pushes modes
 directly, which is what the `welcome` path and a backlogged client do, and is
-the only thing covering that rule.
+the only thing covering that rule -- verified by deleting the rule and watching
+every check in `two-editors.sh` stay green.
 
 To watch traffic while driving real editors by hand, the server repository has
-`scripts/fake-client.js`:
+`scripts/fake_client.py`:
 
 ```sh
-node scripts/fake-client.js --watch --user spy
+python3 scripts/fake_client.py --watch --user spy
 ```
 
 ## Caveats
