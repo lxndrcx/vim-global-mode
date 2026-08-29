@@ -14,7 +14,7 @@
 # and prints its path; anything already built works too.
 #
 # Usage: tests/two-editors.sh [path-to-server-binary]
-#        GLOBAL_MODE_SERVER=/path/to/main.exe tests/two-editors.sh
+#        GLOBAL_MODE_SERVER=/path/to/bin/global_mode tests/two-editors.sh
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -170,7 +170,7 @@ check "seq advanced once leaving visual" "$(seq_of sam)" "$((base_seq + 4))"
 # A cross-mode transition between two real editors. This is a worthwhile
 # end-to-end check, but be clear about what it does NOT cover: it cannot reach
 # the loop guard's transit rule. Deleting that rule leaves every check in this
-# file green -- verified, not assumed. Only tests/loop-guard.js, which pushes a
+# file green -- verified, not assumed. Only tests/loop_guard.py, which pushes a
 # mode directly with gaps between, fails when it goes.
 #
 # The reason has changed even though the conclusion has not. It used to be that

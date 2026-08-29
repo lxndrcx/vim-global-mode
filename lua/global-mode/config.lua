@@ -23,9 +23,11 @@ M.current = vim.deepcopy(defaults)
 ---
 --- `vim.version` is a lazily-required module, and that require fails inside a
 --- `vim.uv` callback because the runtime-file loader is unavailable in a fast
---- event context. Building the hello message there would therefore throw --
---- intermittently, depending on whether something else had already loaded the
---- module -- and abort the connect before `read_start` was ever reached.
+--- event context -- intermittently, depending on whether something else had
+--- already loaded the module. It no longer travels on the wire, where it was
+--- once part of the hello and could abort the connect from there; `:checkhealth`
+--- is the only thing that reads it now, and resolving it at setup is what keeps
+--- the fast-context rule from mattering at all.
 M.nvim_version = "?"
 
 --- Validate by hand rather than with `vim.validate`.

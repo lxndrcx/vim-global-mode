@@ -60,8 +60,10 @@ port                    number (default 7777)
 
 user                    string (default $USER, then $USERNAME, then "anon")
                         The name shown to everyone else when you change the
-                        mode. This is who gets blamed. Capped by the server at
-                        64 characters.
+                        mode. This is who gets blamed. It travels in a fixed
+                        32-byte field: a longer name is truncated to 32 bytes
+                        rather than refused, and the truncation is by byte, so
+                        a multi-byte character can be cut in half.
 
 auto_connect            boolean (default true)
                         Connect on startup. Set false to require an explicit
@@ -72,9 +74,13 @@ notify                  boolean (default true)
                         |vim.notify()|.
 
 reconnect               table (default { min = 1000, max = 30000 })
-                        Exponential backoff bounds in milliseconds. The delay
-                        doubles from `min` on each failed attempt, capped at
-                        `max`.
+                        Exponential backoff bounds in milliseconds, governing
+                        how often the handshake is retried while offline. The
+                        delay doubles from `min` on each unanswered attempt,
+                        capped at `max`. It does not apply once online: there
+                        the server's own refresh is the liveness signal, and a
+                        long backoff would make one lost datagram look like a
+                        dead server.
 
 ==============================================================================
 4. COMMANDS                                           *global-mode-commands*
@@ -87,11 +93,15 @@ reconnect               table (default { min = 1000, max = 30000 })
 
                                                         *:GlobalModeStatus*
 :GlobalModeStatus       Report the global mode, who set it, and how many other
-                        editors are connected.
+                        editors are connected. The count is whatever the last
+                        roster said, which is none until something asks for
+                        one -- see |global-mode-roster|.
 
 :checkhealth global-mode
                         Report connection state, the global mode, and the
-                        roster of connected editors.
+                        roster of connected editors. This is the only thing
+                        that requests a roster, so it is also what makes
+                        |global-mode.others()| non-empty.
 
 ==============================================================================
 5. STATUSLINE                                       *global-mode-statusline*
@@ -139,10 +149,15 @@ global-mode.highlight()                          *global-mode.highlight()*
 global-mode.lualine()                              *global-mode.lualine()*
 global-mode.status()                                *global-mode.status()*
 global-mode.others()                                *global-mode.others()*
-                Everyone connected except you.
+                Everyone connected except you, from the last roster received.
+                Empty until one is requested; |:checkhealth| is what requests
+                it. See |global-mode-roster|.
 
 global-mode.state                                        *global-mode.state*
                 Table with `mode`, `by`, `seq`, `id`, `peers` and `status`.
+                `id` is the small integer the server seated you at, `seq` its
+                change counter, and `status` one of "offline", "connecting"
+                or "online".
 
 ==============================================================================
 7. HOW IT WORKS                                      *global-mode-internals*
@@ -172,16 +187,55 @@ honoured from that editor — without it, two reports sent a millisecond apart
 and reordered in flight would leave everybody in the mode you had just left.
 The counter restarts on every handshake, on both sides at once.
 
-                                                       *global-mode-resync*
-Separately, the server's heartbeat carries the authoritative mode every five
-seconds, and a client that has drifted adopts it. This is the only resync the
-protocol has: it announces changes and nothing else, so an editor that missed
-one — a frame dropped from a full outbox, two editors changing mode in the same
-instant, an apply refused by the rate limiter — would otherwise disagree with
-everyone else permanently. A client already in the global mode does nothing.
+                                                        *global-mode-frames*
+Transport is UDP, in frames of exactly 84 bytes. One datagram is one frame, so
+the plugin does no framing: there is no length prefix to read, no delimiter to
+scan for and no half-a-message to hold onto. The frames are packed by hand,
+because the LuaJIT Neovim ships has no `string.pack`.
 
-An unanswered heartbeat also has a second job: the server drops a client after
-two of them, so a dead connection is not held open indefinitely.
+                                                     *global-mode-handshake*
+Joining takes a round trip. A UDP source address is forgeable, so the server
+answers your hello with a token computed from the address that hello arrived
+from, and seats you only when you echo it back. The token is computed rather
+than stored, so a flood of hellos has no table to exhaust. The client echoes it
+untouched and never looks inside.
+
+The client also ignores every datagram that did not come from the configured
+host and port. Its socket is bound to a wildcard port that any local process
+can reach, and one forged frame is otherwise enough to drag this editor into a
+mode nobody chose. That stops strays and unprivileged local processes, not an
+attacker who can forge the source address as well.
+
+                                                       *global-mode-resync*
+There is no resync, because nothing is ever incremental. The server does not
+announce that the mode changed; every frame it sends carries the whole state —
+the mode, who set it, and which change number it is — and the client adopts
+anything newer than what it holds. Order does not matter, duplicates are
+no-ops, and a datagram lost in flight is replaced by the refresh a couple of
+seconds later. An earlier version of this protocol announced only changes, and
+every way of missing one was permanent.
+
+That is only true of frames coming from the server, which carry state. Mode
+reports going the other way are events, and are ordered by the counter above.
+
+                                                     *global-mode-liveness*
+The same refresh is the liveness probe. Some refreshes ask for a pong; three
+unanswered ones — about six seconds — and the server frees your seat. The
+client watches the same clock from its side: six seconds with nothing from the
+server and it declares the server gone, clears the global mode, and starts the
+handshake again on the |global-mode-config| backoff. Both ends therefore give
+up at about the same moment, rather than one of them talking to nobody.
+
+|:GlobalModeDisconnect| does not rely on that: it says goodbye explicitly, so
+the seat is freed at once.
+
+                                                       *global-mode-roster*
+The roster is pull-only. Broadcasting one on every join and departure was an
+O(n) amplifier on the server, so it is sent one frame per editor in reply to a
+request, and `:checkhealth global-mode` is the only thing in this plugin that
+asks. Entries are collected by index until the set is whole, so a duplicated or
+reordered datagram cannot publish a roster with somebody listed twice and
+somebody else missing.
 
                                                    *global-mode-operator-pending*
 Operator-pending mode is dropped before anything is scheduled. A |ModeChanged|
@@ -197,7 +251,10 @@ is issued and applies pause briefly, so a bug degrades into a log line rather
 than a hung editor.
 
                                                        *global-mode-security*
-There is no authentication. Anyone who can reach the port can change the mode
-for everyone connected. Do not expose it to the public internet.
+There is no authentication. The handshake |global-mode-handshake| proves only
+that you can receive at the address you claimed; it says nothing about who you
+are, and the name you report is whatever you care to type. Anyone who can
+reach the port can join and change the mode for everyone connected. Do not
+expose it to the public internet.
 
 vim:tw=78:ts=8:noet:ft=help:norl:

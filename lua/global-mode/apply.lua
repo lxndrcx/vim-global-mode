@@ -94,8 +94,8 @@ function M.apply(mode)
     -- Without this the deadline was only ever checked from `consume`, which
     -- fires on a local `ModeChanged` -- so an apply that produced no mode
     -- change at all (E21 in a `nomodifiable` buffer, say) left an entry that
-    -- suppressed every later apply of that same mode, including the heartbeat
-    -- resync. The one mechanism meant to repair drift was defeated by it.
+    -- suppressed every later apply of that same mode, including the periodic
+    -- refresh. The one thing that repairs drift was defeated by it.
     expire()
 
     -- Compare against the mode we are already committed to entering, not the

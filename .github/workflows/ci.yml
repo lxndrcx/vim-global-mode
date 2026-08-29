@@ -32,13 +32,14 @@ jobs:
       # Drives a real Neovim against a controlled server. Covers the loop-guard
       # case two-editors.sh structurally cannot reach: a mode pushed directly at
       # an editor that is in some other non-normal mode. The server here is a
-      # few lines of Node, so this job needs nothing from the server repository.
+      # short Python one, so this job needs nothing from the server repository.
       - name: Loop guard
         run: python3 tests/loop_guard.py nvim
 
-      # The heartbeat is the protocol's only resync. Without it, several ways an
-      # editor can drift out of step with the server are permanent.
-      - name: Heartbeat resync
+      # Every frame carries full state and the server re-sends it every couple
+      # of seconds, which is the whole of the loss repair: an editor that missed
+      # a change is corrected by the next refresh rather than staying wrong.
+      - name: Refresh and drift repair
         run: python3 tests/resync.py nvim
 
       # Three ways to talk a client out of listening to its own server, all of

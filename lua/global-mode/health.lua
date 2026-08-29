@@ -9,7 +9,7 @@ function M.check()
   vim.health.start("global-mode")
 
   if vim.fn.has("nvim-0.10") == 0 then
-    vim.health.error("Neovim 0.10 or newer is required (vim.uv, vim.json)")
+    vim.health.error("Neovim 0.10 or newer is required (vim.uv)")
     return
   end
   vim.health.ok("Neovim " .. tostring(vim.version()))

@@ -154,7 +154,8 @@ eq("statusline is empty again", gm.statusline(), "")
 -- past its deadline it must not suppress a re-apply of the same mode: the
 -- deadline used to be consulted only from `consume`, which fires on a local
 -- ModeChanged, so a stale entry silently swallowed every later apply of that
--- mode — including the heartbeat resync, the one mechanism that repairs drift.
+-- mode — including the server's periodic refresh, the one thing that repairs
+-- drift.
 apply.reset()
 table.insert(apply.expected, { mode = "i", deadline = vim.uv.now() - 1 })
 apply.apply("i")

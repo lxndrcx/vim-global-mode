@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-"""Regression test for heartbeat resync.
+"""Regression test for the periodic refresh, and the drift it repairs.
 
-An editor can drift out of step with the server in several ways that nothing
-else corrects: a frame discarded from a full outbox, two editors changing mode
-at the same instant so the winner never learns its own `seq`, an apply dropped
-by the circuit breaker. Each of those used to be permanent, because the protocol
-had no resync at all -- the server only ever announced *changes*, so a client
-that missed one stayed wrong forever.
+An editor can end up disagreeing with the server in ways nothing else corrects:
+a datagram lost in flight, two editors changing mode at the same instant so the
+winner never learns its own `seq`, an apply dropped by the circuit breaker. Each
+of those was once permanent, because the protocol announced only *changes* -- a
+client that missed one stayed wrong forever.
 
-The heartbeat now carries the authoritative mode. This drives a real Neovim into
-a state that disagrees with the server and asserts the next beat fixes it,
-without the client echoing anything back.
+Every frame now carries the full state, and the server re-sends it every couple
+of seconds whether anything changed or not. That refresh is the whole of the
+loss repair, and it doubles as the liveness probe. This drives a real Neovim
+into a state that disagrees with the server and asserts the next refresh fixes
+it, without the client echoing anything back.
 
 Usage: python3 tests/resync.py <path-to-nvim> [port]
 """
@@ -69,7 +70,7 @@ def keepalive() -> None:
         time.sleep(2)
         # Deliberately not asking for a pong. This frame exists only so the
         # client keeps hearing from us; a pong request here would be counted
-        # against the heartbeats the test actually sends.
+        # against the probes the test actually sends.
         server.send(
             frames.encode(
                 type=T.STATE,
@@ -110,36 +111,36 @@ def main() -> int:
         c.check("the editor is in insert", editor.mode(), "i")
         c.check("the change was sent", received, ["i"])
 
-        # A heartbeat carrying the authoritative state must pull it back.
+        # A refresh carrying the authoritative state must pull it back.
         before = len(received)
         ping("n", 4)
         time.sleep(1.5)
-        c.check("the heartbeat corrected the editor", editor.mode(), "n")
+        c.check("the refresh corrected the editor", editor.mode(), "n")
         c.check("and it agrees on the global mode", editor.global_mode(), "n")
         c.check("the correction was not echoed back", received[before:], [])
 
-        # A heartbeat that agrees with the editor must do nothing at all.
+        # A refresh that agrees with the editor must do nothing at all.
         quiet = len(received)
         ping("n", 5)
         time.sleep(1.2)
-        c.check("an in-step heartbeat changes nothing", editor.mode(), "n")
+        c.check("an in-step refresh changes nothing", editor.mode(), "n")
         c.check("and sends nothing", received[quiet:], [])
 
-        # A heartbeat can also push the editor into a mode nobody asked for.
+        # A refresh can also push the editor into a mode nobody asked for.
         ping("R", 6)
         time.sleep(1.5)
-        c.check("a heartbeat can install a new mode", editor.mode(), "R")
+        c.check("a refresh can install a new mode", editor.mode(), "R")
 
-        # A stale heartbeat must be ignored rather than dragging it back.
+        # A stale refresh must be ignored rather than dragging it back.
         ping("i", 2)
         time.sleep(1.2)
-        c.check("a stale heartbeat is ignored", editor.mode(), "R")
+        c.check("a stale refresh is ignored", editor.mode(), "R")
 
-        # Every heartbeat must be answered. The server reaps a client after two
-        # unanswered pings, and an idle editor -- nobody typing, which is the
-        # normal state -- sends nothing else, so a missing pong means every
-        # quiet editor is dropped roughly every fifteen seconds.
-        c.check("every heartbeat was answered", pongs, pings_sent)
+        # Every probe must be answered. The real server reaps a peer after
+        # three unanswered ones, and an idle editor -- nobody typing, which is
+        # the normal state -- sends nothing else, so a missing pong means every
+        # quiet editor is dropped after about six seconds.
+        c.check("every probe was answered", pongs, pings_sent)
     finally:
         editor.close()
         server.stop()

@@ -18,7 +18,7 @@ This is a joke. It works completely.
 ## Install
 
 The plugin is pure Lua and depends on nothing — no build step, no companion
-binary, no Rust toolchain. Neovim's built-in `vim.uv` provides the TCP client.
+binary, no Rust toolchain. Neovim's built-in `vim.uv` provides the UDP socket.
 
 ```lua
 -- lazy.nvim
@@ -75,6 +75,11 @@ Or use the pieces directly — `require("global-mode").statusline()` returns
 | `:GlobalModeStatus` | report the global mode and who set it |
 | `:checkhealth global-mode` | connection state, the global mode, and the roster |
 
+The roster is the one thing the server does not push — broadcasting it on every
+join and departure was an amplifier, so it is sent only when asked for, and
+`:checkhealth` is the only thing that asks. Until it does, `others()` and
+`state.peers` are empty and `:GlobalModeStatus` reports no other editors.
+
 ## How it works
 
 A `ModeChanged` autocmd reports your mode; the server records it as *the* mode
@@ -111,6 +116,12 @@ replaced by the next refresh a couple of seconds later. There is no resync path
 because nothing is ever incremental — an earlier version of this protocol
 announced only changes, and every way of missing one was permanent.
 
+That refresh is also how each end notices the other has gone. Some of them ask
+for a `pong`; three missed ones — about six seconds — and the server frees your
+seat. The client watches the same clock from the other side: six seconds without
+a frame and it declares the server dead, forgets the global mode and starts the
+handshake again, so both ends give up at roughly the same moment.
+
 **Joining takes a round trip, because UDP source addresses are forgeable.** The
 server answers `hello` with a token computed from the address the hello came
 from, and admits you only when you echo it back. Without that, anyone could
@@ -136,23 +147,28 @@ and the frames are packed by hand because Neovim's LuaJIT has no
 nvim -l tests/protocol_spec.lua   # mode normalization
 nvim -l tests/api_spec.lua        # config validation and the statusline API
 python3 tests/loop_guard.py nvim  # the loop guard, against a controlled server
-python3 tests/resync.py nvim      # the heartbeat resync
+python3 tests/resync.py nvim      # the refresh, and the drift it repairs
 python3 tests/restart.py nvim     # server restart, forged frames, stale refreshes
 stylua --check lua plugin tests
+pyrefly check                     # the fake servers, type-checked
 ```
 
 None of those needs the server repository: the loop-guard, resync and restart
-tests bring their own server, a few lines of JavaScript apiece that say exactly
-what each test needs said. The restart one goes further and *stops* its server
-mid-test, which is the whole point of it -- a client that has been following a
-long-running server must still follow that server after it comes back counting
-from zero.
+tests bring their own server, a small Python one apiece that says exactly what
+each test needs said. They share `tests/harness.py`, which drives the headless
+editor, and `tests/frames.py`, which is a second, independent implementation of
+the wire format — so the plugin is never held only to its own encoder. CI
+type-checks both with `pyrefly check`, to the standard the Lua is linted to.
+
+The restart one goes further and *stops* its server mid-test, which is the whole
+point of it -- a client that has been following a long-running server must still
+follow that server after it comes back counting from zero.
 
 `tests/two-editors.sh` is the headline, and the one that needs the real thing —
 it starts a server, launches two headless Neovim instances, presses `i` in one
 and asserts the other ends up in insert mode. `scripts/build-server.sh` clones
-and builds the server repository for it (installing GNAT if you have not got
-it) and prints the binary's path:
+and builds the server repository for it (installing GNAT with apt if it is
+missing and you are root) and prints the binary's path:
 
 ```sh
 ./scripts/build-server.sh   # into .server/, which is gitignored
@@ -162,16 +178,20 @@ it) and prints the binary's path:
 Or point it at a build you already have:
 
 ```sh
-./tests/two-editors.sh /path/to/main.exe
-GLOBAL_MODE_SERVER=/path/to/main.exe ./tests/two-editors.sh
+./tests/two-editors.sh /path/to/bin/global_mode
+GLOBAL_MODE_SERVER=/path/to/bin/global_mode ./tests/two-editors.sh
 ```
 
-But it is not sufficient on its own, and says so in its own comments: a real
-editor walking `i`→`v` steps its peers through normal, so the loop guard's
-transit rule is unreachable from it. `tests/loop_guard.py` pushes modes
-directly, which is what the `welcome` path and a backlogged client do, and is
-the only thing covering that rule -- verified by deleting the rule and watching
-every check in `two-editors.sh` stay green.
+But it is not sufficient on its own, and says so in its own comments: it cannot
+reach the loop guard's transit rule. A real editor walking `i`→`v` now reports
+only the `v` — the client coalesces the burst — so the recipient *is* pushed
+straight from insert into visual and the transit does fire, but the same
+coalescing swallows the spurious `n` it would otherwise have echoed, and no
+check here notices either way. `tests/loop_guard.py` pushes modes directly with
+gaps between them, which is what a `Welcome` does for a late joiner and what
+every refresh does for everybody, and it is the only thing covering that rule --
+verified by deleting the rule and watching every check in `two-editors.sh` stay
+green.
 
 To watch traffic while driving real editors by hand, the server repository has
 `scripts/fake_client.py`:
@@ -189,5 +209,7 @@ typing a command. That is the entire point, and there is no opt-out short of
 Terminal mode is reported and displayed but never forced — you cannot
 meaningfully shove someone into terminal mode in a buffer that is not a terminal.
 
-There is no authentication. Anyone who can reach the port can change everyone's
-mode. Do not put this on the public internet.
+There is no authentication. The join handshake proves only that you can receive
+at the address you claimed; it says nothing about who you are, and anyone who
+can reach the port can join and change everyone's mode. Do not put this on the
+public internet.
