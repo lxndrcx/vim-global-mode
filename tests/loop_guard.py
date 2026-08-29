@@ -77,8 +77,9 @@ def keepalive() -> None:
     while True:
         time.sleep(2)
         # Deliberately not asking for a pong. This frame exists only so the
-        # client keeps hearing from us; a pong request here would be counted
-        # against the heartbeats the test actually sends.
+        # client keeps hearing from us -- six seconds of silence and it would
+        # declare this server dead mid-test. Nothing here checks pongs; that is
+        # tests/resync.py's job.
         server.send(
             frames.encode(
                 type=T.STATE,

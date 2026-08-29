@@ -7,11 +7,13 @@
 # either -- so a session and CI agree with each other even though neither is
 # reproducible against an old commit.
 #
-# The MoonBit toolchain is deliberately not installed here. The server moved to
-# lxndrcx/vim-global-mode-server-moonbit, and the one test that needs a running
+# An Ada toolchain is deliberately not installed here. The server lives in
+# lxndrcx/vim-global-mode-server-ada, and the one test that needs a running
 # server -- tests/two-editors.sh -- gets one from `scripts/build-server.sh`,
-# which installs MoonBit itself if you ask it to. Most work in this repository
-# is Lua and needs neither.
+# which installs GNAT itself if you ask it to. Most work in this repository is
+# Lua and needs neither. Nothing is installed for the fake servers under tests/
+# either: they are plain Python with no third-party imports, and pyrefly, which
+# CI type-checks them with, is a pip install away when it is wanted.
 #
 # This runs asynchronously, so the session starts immediately and the downloads
 # land behind it. See the race note below before using anything installed here.

@@ -5,8 +5,9 @@
 --- handed exactly 84 bytes or it is not called.
 ---
 --- The server side of this is `Global_Mode.Wire` in the Ada repository, and
---- `scripts/fake-client.js` there is the reference encoder. The two must agree
---- byte for byte; `tests/protocol_spec.lua` is what checks that they do.
+--- `scripts/frames.py` there is the reference encoder. The two must agree byte
+--- for byte; `tests/protocol_spec.lua` checks this side against the layout, and
+--- `tests/frames.py` is the copy the fake servers hold it to.
 ---
 --- Neovim ships LuaJIT 2.1, which is Lua 5.1 plus extensions, so `string.pack`
 --- does not exist. The byte arithmetic below is the replacement and is not as
